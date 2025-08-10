@@ -1,4 +1,9 @@
-package spectro
+package utils
+// FILE SUMMARY: Frequency unit conversions, rounding helper, and u8 normalization
+// utilities used by radio setup & display logic.
+
+// NOTE: Utility module untouched by FFT algorithm choices; potential future:
+// add fused scaling/window helpers to reduce passes.
 
 import "core:math"
 
@@ -22,4 +27,13 @@ khz_to_mhz :: proc "contextless" (freq: u32) -> f64 {
 round_to_decimals :: proc "contextless" (value: f64, decimals: int) -> f64 {
     multiplier := math.pow(10.0, f64(decimals))
     return math.round(value * multiplier) / multiplier
+}
+
+u8_to_f32 :: proc (input: ^u8, len: u32) -> []f32 {
+    output := make([]f32, len)
+    data := ([^]u8)(input)
+    for i in 0..<len {
+        output[i] = f32(data[i]) / 255.0 // Normalize to [0, 1]
+    }
+    return output
 }

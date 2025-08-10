@@ -1,0 +1,3 @@
+[submodule "vendor/kissfft/kissfft"]
+	path = vendor/kissfft/kissfft
+	url = https://github.com/mborgerding/kissfft.git
