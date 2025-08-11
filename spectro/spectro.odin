@@ -31,6 +31,8 @@ CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
 // CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
 GAIN_TENTHSDB :: -1 // -1 for auto-gain
 DEFAULT_OVERLAP_ENABLED :: true // Enable 50% FFT overlap by default
+// COLOR_SPECTRUM :: rl.Color{245, 191, 100, 255}
+COLOR_SPECTRUM :: rl.Color{0, 255, 255, 255} // Bright cyan for cyber theme
 
 // Available FFT sizes
 FFT_SIZES := [8]int{64, 128, 256, 512, 1024, 2048, 4096, 8192}
@@ -112,6 +114,12 @@ App :: struct {
 
 	// Gui
 	sidebar_width:        i32, // Width of the sidebar for controls
+	waterfall_top_offset:    f32, // Height of the waterfall display
+	max_db_waterfall:              f32, // dB high limit for spectrum display
+	min_db_waterfall:              f32, // dB low limit for spectrum display
+	min_db_spectrum:     f32, // Min dB for spectrum plot
+	max_db_spectrum:     f32, // Max dB for spectrum plot
+	
 }
 
 app: App
@@ -301,6 +309,7 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 init_app_resources :: proc(app: ^App, fft_n: int) {
 	app.fft_n = fft_n
 	app.sidebar_width = 300 // Default sidebar width
+	app.waterfall_top_offset = 400 // Height of the waterfall display
 
 	// Create FFT plan
 	// app.fft_cfg = kissfft.kiss_fft_alloc(i32(fft_n), 0, nil, nil)
@@ -476,8 +485,10 @@ void main(){
 
 	// GUI state
 	auto_levels := true
-	black_level: f32 = -100.0
-	white_level: f32 = -30.0
+	min_db_waterfall: f32 = -100.0
+	max_db_waterfall: f32 = 20.0
+	min_db_spectrum: f32 = -100.0
+	max_db_spectrum: f32 = 20.0
 	span_db: f32 = 60.0
 	gamma_val: f32 = 1.0
 	frame_skip_display: f32 = 0.0
@@ -762,23 +773,28 @@ void main(){
 					signal_db := select_k(app.db_tmp, p75_idx)
 
 					// Set levels with some headroom
-					black_level = floor_db - 5.0
+					min_db_waterfall = floor_db - 5.0
 
 					// Use dynamic range between floor and signal
 					dynamic_range := signal_db - floor_db
 					if dynamic_range < 20.0 {
 						// If low dynamic range, use fixed span
-						white_level = black_level + span_db
+						max_db_waterfall = min_db_waterfall + span_db
 					} else {
 						// Otherwise adapt to signal
-						white_level = signal_db + 10.0
+						max_db_waterfall = signal_db + 10.0
 					}
 
 				}
 
 				// Convert to colors with proper frequency shifting (fftshift)
-				lo := black_level
-				hi := white_level
+				lo := min_db_waterfall
+				hi := max_db_waterfall
+				app.max_db_waterfall = hi
+				app.min_db_waterfall = lo
+				app.min_db_spectrum = min_db_spectrum
+				app.max_db_spectrum = max_db_spectrum
+
 				if hi - lo < 0.5 do hi = lo + 0.5 // ensure minimum span
 
 				inv := 1.0 / (hi - lo)
@@ -873,7 +889,8 @@ void main(){
 
 		ui_x := f32(rl.GetScreenWidth() - app.sidebar_width + 10)
 		ui_y := f32(10)
-		slider_x := ui_x + 80
+		slider_x := ui_x + 110
+		slider_width := f32(f32(app.sidebar_width) - 120)
 
 		// Render
 		BeginDrawing()
@@ -898,7 +915,7 @@ void main(){
 		DrawTexturePro(
 			app.ring_texture,
 			Rectangle{0, 0, f32(app.ring_texture.width), f32(app.ring_texture.height)},
-			Rectangle{0, 0, f32(GetScreenWidth() - app.sidebar_width), f32(GetScreenHeight())},
+			Rectangle{0, app.waterfall_top_offset, f32(GetScreenWidth() - app.sidebar_width), f32(GetScreenHeight() - i32(app.waterfall_top_offset))},
 			Vector2{0, 0},
 			0.0,
 			WHITE,
@@ -916,7 +933,10 @@ void main(){
 		)
 
 		// Draw a line where the cursor is and a label with the hovered frequency in MHz
+		draw_freq_bar()
 		draw_cursor_freq()
+		draw_spectrum_plot()
+
 
 		// Frequency input box
 		freq_box := Rectangle{ui_x, ui_y, 120, 24}
@@ -957,16 +977,27 @@ void main(){
 
 		if !auto_levels {
 			// Manual black/white level sliders
+			slider_min: f32 = -160.0
+			slider_max: f32 = 20.0
 			ui_y = next_row(ui_y)
-			black_rect := Rectangle{slider_x, ui_y, 200, 20}
-			GuiSliderBar(black_rect, "Black dB", nil, &black_level, -140.0, 140.0)
+			black_rect := Rectangle{slider_x, ui_y, slider_width, 20}
+			GuiSliderBar(black_rect, "Min dB Plot", nil, &min_db_spectrum, slider_min, slider_max)
 
 			ui_y = next_row(ui_y)
-			white_rect := Rectangle{slider_x, ui_y, 200, 20}
-			GuiSliderBar(white_rect, "White dB", nil, &white_level, -140.0, 140.0)
+			white_rect := Rectangle{slider_x, ui_y, slider_width, 20}
+			GuiSliderBar(white_rect, "Max dB Plot", nil, &max_db_spectrum, slider_min, slider_max)
 
-			if white_level <= black_level + 0.5 {
-				white_level = black_level + 0.5
+			ui_y = next_row(ui_y)
+			black_rect = Rectangle{slider_x, ui_y, slider_width, 20}
+			GuiSliderBar(black_rect, "Min dB Waterfall", nil, &min_db_waterfall, slider_min, slider_max)
+
+			ui_y = next_row(ui_y)
+			white_rect = Rectangle{slider_x, ui_y, slider_width, 20}
+			GuiSliderBar(white_rect, "Max dB Waterfall", nil, &max_db_waterfall, slider_min, slider_max)
+
+
+			if max_db_waterfall <= min_db_waterfall + 0.5 {
+				max_db_waterfall = min_db_waterfall + 0.5
 			}
 
 			ui_y = next_row(ui_y) // add some space before next controls
@@ -1079,7 +1110,7 @@ draw_cursor_freq :: proc() {
 	waterfall_width := GetScreenWidth() - app.sidebar_width
 	if mouse_x < waterfall_width {
 		// Draw vertical line at mouse X position
-		DrawRectangle(i32(mouse_x) - 4, 0, 8, GetScreenHeight(), rl.Color{245, 191, 100, 100})
+		DrawRectangle(i32(mouse_x) - 10, 0, 20, GetScreenHeight(), rl.Color{245, 191, 100, 100})
 		DrawLine(i32(mouse_x), 0, i32(mouse_x), GetScreenHeight(), rl.Color{245, 191, 100, 255})
 		// Calculate frequency at this X position
 		// The waterfall spans from -sample_rate/2 to +sample_rate/2 around center_freq
@@ -1114,4 +1145,261 @@ draw_cursor_freq :: proc() {
 		}
 	}
 
+}
+
+// Configuration constants for frequency bar display
+FREQ_BAR_MAJOR_TICK_SPACING_MHZ :: 1.0  // Major tick spacing in MHz
+FREQ_BAR_MINOR_TICK_SPACING_MHZ :: 0.1  // Minor tick spacing in MHz
+FREQ_BAR_SHOW_MINOR_LABELS :: true     // Whether to show text labels on minor ticks
+
+draw_freq_bar :: proc() {
+	using rl
+	
+	// Calculate frequency range and scale
+	waterfall_width := GetScreenWidth() - app.sidebar_width
+	
+	// Check if we need to redraw (frequency or window size changed)
+
+	
+	half_sample_rate := f64(SAMPLE_RATE) / 2.0
+	center_freq_mhz := f64(app.center_freq) / 1e6
+	start_freq_mhz := center_freq_mhz - half_sample_rate / 1e6
+	end_freq_mhz := center_freq_mhz + half_sample_rate / 1e6
+	
+	// Frequency bar parameters
+	bar_height: i32 = 50
+	bar_y: i32 = i32(app.waterfall_top_offset)  // Above the FPS display
+	text_height: i32 = 40
+	minor_text_height: i32 = 20
+	tick_height: i32 = 8
+	
+	// Draw background bar
+	DrawRectangle(0, bar_y, waterfall_width, bar_height, rl.Color{40, 40, 40, 200})
+	
+	// Use configured major tick spacing
+	nice_step := f64(FREQ_BAR_MAJOR_TICK_SPACING_MHZ)
+	
+	// Pre-calculate constants for performance
+	freq_span_mhz := end_freq_mhz - start_freq_mhz
+	inv_freq_span := 1.0 / freq_span_mhz
+	first_tick := math.floor(start_freq_mhz / nice_step) * nice_step
+	
+	// Draw major ticks and labels
+	freq := first_tick
+	tick_count := 0
+	max_ticks := 20  // Safety limit to prevent excessive drawing
+	for freq <= end_freq_mhz + nice_step && tick_count < max_ticks {
+		if freq >= start_freq_mhz - nice_step / 2.0 {
+			// Calculate x position (optimized)
+			normalized_pos := (freq - start_freq_mhz) * inv_freq_span
+			x := i32(normalized_pos * f64(waterfall_width))
+			
+			if x >= 0 && x <= waterfall_width {
+				// Draw major tick
+				DrawLine(x, bar_y, x, bar_y + tick_height, rl.Color{200, 200, 200, 255})
+				
+				// Use a pre-formatted string approach to avoid allocations every frame
+				// Round frequency for cleaner display
+				freq_rounded := utils.round_to_decimals(freq, 1)
+				
+				// Simple integer check for cleaner labels
+				if math.abs(freq_rounded - math.round(freq_rounded)) < 0.01 {
+					// Display as integer
+					freq_str := fmt.tprintf("%.0f", freq_rounded)
+					// defer delete(freq_str) // Clean up allocation
+					
+					text_width := MeasureText(cstring(raw_data(freq_str)), text_height)
+					label_x := x - text_width / 2
+					if label_x < 0 do label_x = 0
+					if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
+					
+					DrawText(
+						cstring(raw_data(freq_str)),
+						label_x,
+						bar_y + tick_height + 2,
+						text_height,
+						rl.Color{200, 200, 200, 255},
+					)
+				} else {
+					// Display with one decimal place
+					freq_str := fmt.tprintf("%.3f", freq_rounded)
+					// defer delete(freq_str) // Clean up allocation
+					
+					text_width := MeasureText(cstring(raw_data(freq_str)), text_height)
+					label_x := x - text_width / 2
+					if label_x < 0 do label_x = 0
+					if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
+					
+					DrawText(
+						cstring(raw_data(freq_str)),
+						label_x,
+						bar_y + tick_height + 2,
+						text_height,
+						rl.Color{200, 200, 200, 255},
+					)
+				}
+				tick_count += 1
+			}
+		}
+		freq += nice_step
+	}
+	
+	// Use configured minor tick spacing
+	minor_step := f64(FREQ_BAR_MINOR_TICK_SPACING_MHZ)
+	freq = math.floor(start_freq_mhz / minor_step) * minor_step
+	minor_count := 0
+	max_minor := 50  // Limit minor ticks for performance
+	for freq <= end_freq_mhz + minor_step && minor_count < max_minor {
+		if freq >= start_freq_mhz - minor_step / 2.0 {
+			normalized_pos := (freq - start_freq_mhz) * inv_freq_span
+			x := i32(normalized_pos * f64(waterfall_width))
+			
+			if x >= 0 && x <= waterfall_width {
+				// Fixed check: only draw if not close to a major tick
+				remainder := math.mod(freq, nice_step)
+				is_major := remainder < 0.01 || remainder > (nice_step - 0.01)
+				if !is_major {
+					DrawLine(x, bar_y, x, bar_y + tick_height / 2, rl.Color{150, 150, 150, 128})
+					
+					// Draw minor tick labels if enabled
+					if FREQ_BAR_SHOW_MINOR_LABELS {
+						freq_rounded := utils.round_to_decimals(freq, 1)
+						freq_str := fmt.tprintf("%.1f", freq_rounded)
+						
+						text_width := MeasureText(cstring(raw_data(freq_str)), minor_text_height)
+						label_x := x - text_width / 2
+						if label_x < 0 do label_x = 0
+						if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
+						
+						DrawText(
+							cstring(raw_data(freq_str)),
+							label_x,
+							bar_y + tick_height / 2 + 2,
+							minor_text_height,
+							rl.Color{150, 150, 150, 180},
+						)
+					}
+					
+					minor_count += 1
+				}
+			}
+		}
+		freq += minor_step
+	}
+	
+	// Draw center frequency marker
+	center_x := waterfall_width / 2
+	DrawLine(center_x, bar_y - 5, center_x, bar_y + bar_height, rl.Color{255, 255, 0, 255})
+	
+	// Draw MHz unit label - use string literal to avoid allocation
+	DrawText("MHz", waterfall_width - 40, bar_y + 2 + bar_height / 2, 10, rl.Color{180, 180, 180, 255})
+}
+
+draw_spectrum_plot :: proc() {
+	using rl
+	
+	if !app.spectrum_initialized || len(app.power_spectrum) == 0 {
+		return
+	}
+	
+	waterfall_width := GetScreenWidth() - app.sidebar_width
+	plot_height: i32 = 400
+	plot_y: i32 = 0
+	
+	// Draw background
+	DrawRectangle(0, plot_y, waterfall_width, plot_height, rl.Color{20, 20, 30, 180})
+	
+	// Calculate dB range for scaling
+	min_db: f32 = app.min_db_spectrum
+	max_db: f32 = app.max_db_spectrum
+	
+	// Auto-scale to data if available
+	// if len(app.db_array) > 0 {
+	// 	data_min := app.db_array[0]
+	// 	data_max := app.db_array[0]
+	// 	for val in app.db_array {
+	// 		if val < data_min do data_min = val
+	// 		if val > data_max do data_max = val
+	// 	}
+	// 	// Add some padding
+	// 	range_padding := (data_max - data_min) * 0.1
+	// 	min_db = data_min - range_padding
+	// 	max_db = data_max + range_padding
+	// }
+	
+	db_range := max_db - min_db
+	if db_range < 1.0 do db_range = 1.0
+	
+	// Cyber theme highlight color (bright cyan)
+	spectrum_color := COLOR_SPECTRUM  // Cyan
+	grid_color := rl.Color{100, 100, 120, 100}
+	
+	// Draw grid lines
+	grid_lines := 5
+	for i in 0..=grid_lines {
+		y := plot_y + i32(f32(i) * f32(plot_height) / f32(grid_lines))
+		DrawLine(0, y, waterfall_width, y, grid_color)
+		
+		// Grid labels
+		db_val := max_db - (f32(i) / f32(grid_lines)) * db_range
+		label := fmt.tprintf("%.0fdB", db_val)
+		DrawText(cstring(raw_data(label)), 5, y - 8, 20, rl.Color{200, 200, 200, 255})
+	}
+	
+	// Draw spectrum line with fftshift
+	if len(app.db_array) >= 2 {
+		half_n := app.fft_n / 2
+		
+		for x in 0..<waterfall_width-1 {
+			// Map x position to frequency bin (with fftshift)
+			bin_f := f32(x) * f32(app.fft_n) / f32(waterfall_width)
+			bin := int(bin_f)
+			
+			// Apply fftshift mapping (same as waterfall)
+			actual_bin: int
+			if bin < half_n {
+				actual_bin = bin + half_n
+			} else {
+				actual_bin = bin - half_n
+			}
+			
+			// Clamp to valid range
+			if actual_bin >= app.fft_n do actual_bin = app.fft_n - 1
+			if actual_bin < 0 do actual_bin = 0
+			
+			// Get next bin for line drawing
+			next_bin_f := f32(x + 1) * f32(app.fft_n) / f32(waterfall_width)
+			next_bin := int(next_bin_f)
+			next_actual_bin: int
+			if next_bin < half_n {
+				next_actual_bin = next_bin + half_n
+			} else {
+				next_actual_bin = next_bin - half_n
+			}
+			if next_actual_bin >= app.fft_n do next_actual_bin = app.fft_n - 1
+			if next_actual_bin < 0 do next_actual_bin = 0
+			
+			// Scale dB values to plot coordinates
+			db1 := app.db_array[actual_bin]
+			db2 := app.db_array[next_actual_bin]
+			
+			y1_norm := (max_db - db1) / db_range
+			y2_norm := (max_db - db2) / db_range
+			
+			y1 := plot_y + i32(y1_norm * f32(plot_height))
+			y2 := plot_y + i32(y2_norm * f32(plot_height))
+			
+			// Clamp to plot area
+			y1 = math.clamp(y1, plot_y, plot_y + plot_height)
+			y2 = math.clamp(y2, plot_y, plot_y + plot_height)
+			
+			DrawLine(i32(x), y1, i32(x + 1), y2, spectrum_color)
+		}
+	}
+	
+	// Draw plot border
+	DrawRectangleLines(0, plot_y, waterfall_width, plot_height, rl.Color{100, 100, 120, 255})
+	
+	// Label
+	DrawText("Spectrum", waterfall_width - 100, plot_y + 5, 20, rl.Color{200, 200, 200, 255})
 }
