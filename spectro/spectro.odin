@@ -922,6 +922,22 @@ void main(){
 		)
 		EndShaderMode()
 
+		// Draw a line where the cursor is and a label with the hovered frequency in MHz
+		draw_freq_bar()
+		draw_spectrum_plot()
+		draw_cursor_freq()
+
+		// Display current freq in orange in the top center
+		freq_text := fmt.ctprintf("%.3f MHz", f64(app.center_freq) / 1e6)
+		// text_width := MeasureText(freq_text, 20)
+		DrawText(
+			freq_text,
+			i32((GetScreenWidth() - app.sidebar_width) / 2) + 10,
+			10,
+			40,
+			rl.Color{245, 191, 100, 255},
+		)
+
 		// Draw a red line in the middle to indicate DC
 		dc_line_x := f32((GetScreenWidth() - app.sidebar_width) / 2)
 		DrawLine(
@@ -931,11 +947,6 @@ void main(){
 			GetScreenHeight(),
 			rl.Color{245, 191, 100, 255},
 		)
-
-		// Draw a line where the cursor is and a label with the hovered frequency in MHz
-		draw_freq_bar()
-		draw_cursor_freq()
-		draw_spectrum_plot()
 
 
 		// Frequency input box
@@ -1308,7 +1319,10 @@ draw_spectrum_plot :: proc() {
 	
 	// Draw background
 	DrawRectangle(0, plot_y, waterfall_width, plot_height, rl.Color{20, 20, 30, 180})
-	
+
+	// Draw y label background
+	// Draw background bar
+
 	// Calculate dB range for scaling
 	min_db: f32 = app.min_db_spectrum
 	max_db: f32 = app.max_db_spectrum
@@ -1333,19 +1347,8 @@ draw_spectrum_plot :: proc() {
 	// Cyber theme highlight color (bright cyan)
 	spectrum_color := COLOR_SPECTRUM  // Cyan
 	grid_color := rl.Color{100, 100, 120, 100}
-	
-	// Draw grid lines
-	grid_lines := 5
-	for i in 0..=grid_lines {
-		y := plot_y + i32(f32(i) * f32(plot_height) / f32(grid_lines))
-		DrawLine(0, y, waterfall_width, y, grid_color)
-		
-		// Grid labels
-		db_val := max_db - (f32(i) / f32(grid_lines)) * db_range
-		label := fmt.tprintf("%.0fdB", db_val)
-		DrawText(cstring(raw_data(label)), 5, y - 8, 20, rl.Color{200, 200, 200, 255})
-	}
-	
+
+
 	// Draw spectrum line with fftshift
 	if len(app.db_array) >= 2 {
 		half_n := app.fft_n / 2
@@ -1396,6 +1399,23 @@ draw_spectrum_plot :: proc() {
 			DrawLine(i32(x), y1, i32(x + 1), y2, spectrum_color)
 		}
 	}
+
+	DrawRectangle(0, plot_y, 80, plot_height, rl.Color{40, 40, 40, 200})
+
+	// Draw grid lines
+	grid_lines := 5
+	for i in 0..=grid_lines {
+		y := plot_y + i32(f32(i) * f32(plot_height) / f32(grid_lines))
+		DrawLine(0, y, waterfall_width, y, grid_color)
+		
+		// Grid labels - skip first and last
+		if i > 0 && i < grid_lines {
+			db_val := max_db - (f32(i) / f32(grid_lines)) * db_range
+			label := fmt.tprintf("%.0fdB", db_val)
+			DrawText(cstring(raw_data(label)), 5, y - 8, 20, rl.Color{200, 200, 200, 255})
+		}
+	}
+	
 	
 	// Draw plot border
 	DrawRectangleLines(0, plot_y, waterfall_width, plot_height, rl.Color{100, 100, 120, 255})
