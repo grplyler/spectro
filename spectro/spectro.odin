@@ -21,9 +21,10 @@ import kissfft "../vendor/kissfft"
 import "utils"
 
 // Configuration constants
-INIT_FFT_SIZE :: 8192
+INIT_FFT_SIZE :: 2048
 // MAX_FFT_SIZE :: 8192
 HISTORY_ROWS :: 1024
+BLOCK_SIZE :: 16384 // Number of samples per read
 SAMPLE_RATE :: 2048000 // 2.048 MHz
 CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
 // CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
@@ -75,6 +76,7 @@ App :: struct {
 	freq_input:           [32]u8,
 	freq_edit:            bool,
 	pending_retune:       bool,
+	cursor_set_retune: bool,
 
 	// Frame skipping for waterfall speed
 	frame_skip:           int,
@@ -98,18 +100,18 @@ App :: struct {
 	// FFT overlap control
 	overlap_enabled:      bool,
 	prev_overlap_enabled: bool,
-	
+
 	// IQ correction parameters
-	dc_i_avg:             f32,  // Running average of DC offset for I
-	dc_q_avg:             f32,  // Running average of DC offset for Q
-	dc_alpha:             f32,  // EMA factor for DC tracking (0.995 = slow adaptation)
-	
+	dc_i_avg:             f32, // Running average of DC offset for I
+	dc_q_avg:             f32, // Running average of DC offset for Q
+	dc_alpha:             f32, // EMA factor for DC tracking (0.995 = slow adaptation)
+
 	// Thread management
 	recv_thread:          ^thread.Thread,
 	should_stop_recv:     bool,
 
 	// Gui
-	sidebar_width:         i32, // Width of the sidebar for controls
+	sidebar_width:        i32, // Width of the sidebar for controls
 }
 
 app: App
@@ -236,14 +238,13 @@ ring_buffer_clear :: proc(rb: ^RingBuffer) {
 retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 	using rtlsdr
 	if dev == nil do return -1
-	if cur^ == new_cf do return 0
 
 	fmt.printf("Starting retune from %.3f MHz to %.3f MHz\n", f64(cur^) / 1e6, f64(new_cf) / 1e6)
-	
+
 	// Stop the current async read by canceling it
 	fmt.println("Stopping async read...")
 	rtlsdr_cancel_async(dev)
-	
+
 	// Wait for thread to finish with timeout
 	if app.recv_thread != nil {
 		fmt.println("Waiting for receive thread to finish...")
@@ -251,75 +252,75 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 		app.recv_thread = nil
 		fmt.println("Receive thread stopped")
 	}
-	
+
 	// Small delay to ensure everything is settled
-	time.sleep(100 * time.Millisecond)
-	
+	// time.sleep(20 * time.Millisecond)
+
 	// Now safely retune
 	r := rtlsdr_set_center_freq(dev, new_cf)
 	if r == 0 {
 		rtlsdr_reset_buffer(dev)
 		cur^ = rtlsdr_get_center_freq(dev) // read back actual
 		fmt.printf("Hardware retuned to %.3f MHz\n", f64(cur^) / 1e6)
-		
+
 		// Clear our buffers after successful retune
 		ring_buffer_clear(&app.ring_buffer)
 		app.frame_fill = 0
 		app.spectrum_initialized = false
-		app.frame_counter = 0  // Reset frame counter too
-		
+		app.frame_counter = 0 // Reset frame counter too
+
 		// Additional delay before restarting
-		time.sleep(100 * time.Millisecond)
-		
+		// time.sleep(20 * time.Millisecond)
+
 		// Restart the async read thread
 		fmt.println("Restarting async read...")
-		app.recv_thread = thread.create_and_start_with_poly_data2(dev, 16384, fn = recv_worker)
-		
+		app.recv_thread = thread.create_and_start_with_poly_data2(dev, BLOCK_SIZE, fn = recv_worker)
+
 		// Give the new thread time to start
-		time.sleep(50 * time.Millisecond)
-		
+		// time.sleep(20 * time.Millisecond)
+
 		fmt.printf("Retune completed successfully\n")
 	} else {
 		fmt.printf("Retune failed (%d) for %.3f MHz\n", r, f64(new_cf) / 1e6)
 		// Restart thread even if retune failed to keep receiving
 		fmt.println("Restarting async read after failed retune...")
-		app.recv_thread = thread.create_and_start_with_poly_data2(dev, 16384, fn = recv_worker)
+		app.recv_thread = thread.create_and_start_with_poly_data2(dev, BLOCK_SIZE, fn = recv_worker)
 	}
 	return r
 }
 
 // Initialize app resources for given FFT size
 init_app_resources :: proc(app: ^App, fft_n: int) {
-    app.fft_n = fft_n
+	app.fft_n = fft_n
 	app.sidebar_width = 300 // Default sidebar width
 
-    // Create FFT plan
-    app.fft_cfg = kissfft.kiss_fft_alloc(i32(fft_n), 0, nil, nil)
+	// Create FFT plan
+	app.fft_cfg = kissfft.kiss_fft_alloc(i32(fft_n), 0, nil, nil)
 
-    // Allocate buffers
-    app.hann_window = make([]f32, fft_n)
-    app.iq_samples = make([]kissfft.kiss_fft_cpx, fft_n)
-    app.fft_output = make([]kissfft.kiss_fft_cpx, fft_n)
-    app.windowed = make([]kissfft.kiss_fft_cpx, fft_n)
-    app.power_spectrum = make([]f32, fft_n)
-    app.db_array = make([]f32, fft_n)
-    app.db_tmp = make([]f32, fft_n)
-    // Full waterfall line for all frequencies
-    app.waterfall_line = make([]rl.Color, fft_n)
+	// Allocate buffers
+	app.hann_window = make([]f32, fft_n)
+	app.iq_samples = make([]kissfft.kiss_fft_cpx, fft_n)
+	app.fft_output = make([]kissfft.kiss_fft_cpx, fft_n)
+	app.windowed = make([]kissfft.kiss_fft_cpx, fft_n)
+	app.power_spectrum = make([]f32, fft_n)
+	app.db_array = make([]f32, fft_n)
+	app.db_tmp = make([]f32, fft_n)
+	// Full waterfall line for all frequencies
+	app.waterfall_line = make([]rl.Color, fft_n)
 
-    // Make Hann window with proper normalization for FFT
-    for i in 0 ..< fft_n {
-        app.hann_window[i] = 0.5 - 0.5 * math.cos(2.0 * math.PI * f32(i) / f32(fft_n - 1))
-    }
+	// Make Hann window with proper normalization for FFT
+	for i in 0 ..< fft_n {
+		app.hann_window[i] = 0.5 - 0.5 * math.cos(2.0 * math.PI * f32(i) / f32(fft_n - 1))
+	}
 
-    // Create textures - full width for all frequencies
-    blank_image := rl.GenImageColor(i32(fft_n), HISTORY_ROWS, rl.BLACK)
-    app.ring_texture = rl.LoadTextureFromImage(blank_image)
-    rl.UnloadImage(blank_image)
-    rl.SetTextureFilter(app.ring_texture, rl.TextureFilter.BILINEAR)
+	// Create textures - full width for all frequencies
+	blank_image := rl.GenImageColor(i32(fft_n), HISTORY_ROWS, rl.BLACK)
+	app.ring_texture = rl.LoadTextureFromImage(blank_image)
+	rl.UnloadImage(blank_image)
+	rl.SetTextureFilter(app.ring_texture, rl.TextureFilter.POINT)
 
-    // Create LUT texture for Viridis colormap
-    lut_pixels := make([]rl.Color, 256)
+	// Create LUT texture for Viridis colormap
+	lut_pixels := make([]rl.Color, 256)
 	defer delete(lut_pixels)
 	for i in 0 ..< 256 {
 		rgb := VIRIDIS_COLORS[i]
@@ -337,32 +338,32 @@ init_app_resources :: proc(app: ^App, fft_n: int) {
 	// Reset state
 	app.frame_fill = 0
 	app.write_head = 0
-    
-    // Reset DC tracking
-    app.dc_i_avg = 0.0
-    app.dc_q_avg = 0.0
-    app.dc_alpha = 0.995  // Slow adaptation for DC tracking
+
+	// Reset DC tracking
+	app.dc_i_avg = 0.0
+	app.dc_q_avg = 0.0
+	app.dc_alpha = 0.995 // Slow adaptation for DC tracking
 }
 
 // Clean up app resources
 cleanup_app_resources :: proc(app: ^App) {
-    if app.hann_window != nil do delete(app.hann_window)
-    if app.iq_samples != nil do delete(app.iq_samples)
-    if app.fft_output != nil do delete(app.fft_output)
-    if app.power_spectrum != nil do delete(app.power_spectrum)
-    if app.db_array != nil do delete(app.db_array)
-    if app.db_tmp != nil do delete(app.db_tmp)
-    if app.waterfall_line != nil do delete(app.waterfall_line)
-    if app.windowed != nil do delete(app.windowed)
-    
-    // Free KissFFT configuration
-    // if app.fft_cfg != nil {
-    //     kissfft.kiss_fft_free(app.fft_cfg)
-    //     app.fft_cfg = nil
-    // }
+	if app.hann_window != nil do delete(app.hann_window)
+	if app.iq_samples != nil do delete(app.iq_samples)
+	if app.fft_output != nil do delete(app.fft_output)
+	if app.power_spectrum != nil do delete(app.power_spectrum)
+	if app.db_array != nil do delete(app.db_array)
+	if app.db_tmp != nil do delete(app.db_tmp)
+	if app.waterfall_line != nil do delete(app.waterfall_line)
+	if app.windowed != nil do delete(app.windowed)
 
-    rl.UnloadTexture(app.ring_texture)
-    rl.UnloadTexture(app.lut_texture)
+	// Free KissFFT configuration
+	// if app.fft_cfg != nil {
+	//     kissfft.kiss_fft_free(app.fft_cfg)
+	//     app.fft_cfg = nil
+	// }
+
+	rl.UnloadTexture(app.ring_texture)
+	rl.UnloadTexture(app.lut_texture)
 }
 
 // RTL-SDR callback
@@ -406,7 +407,7 @@ main :: proc() {
 	fmt.println("Opened RTL-SDR device")
 
 	// Start receiving thread
-	app.recv_thread = thread.create_and_start_with_poly_data2(dev, 16384, fn = recv_worker)
+	app.recv_thread = thread.create_and_start_with_poly_data2(dev, BLOCK_SIZE, fn = recv_worker)
 	defer {
 		if app.recv_thread != nil {
 			rtlsdr.rtlsdr_cancel_async(dev)
@@ -416,10 +417,10 @@ main :: proc() {
 
 	// Initialize Raylib
 	rl.SetConfigFlags(rl.ConfigFlags{.WINDOW_RESIZABLE})
-	InitWindow(1400, 800, "RTL-SDR Spectral Waterfall")
-	SetTargetFPS(60)
+	InitWindow(1400, 1024, "Spectro Analyzer")
+	SetTargetFPS(90)
 	defer CloseWindow()
-	rl.GuiLoadStyle("/Users/ryan/code/spectro/spectro/resources/style_cyber.rgs")
+	rl.GuiLoadStyle("spectro/resources/style_cyber.rgs")
 
 	// Initialize app resources with default FFT size
 	init_app_resources(&app, INIT_FFT_SIZE)
@@ -461,11 +462,11 @@ void main(){
 	SetShaderValue(scroll_shader, tex_height_loc, &tex_height, ShaderUniformDataType.FLOAT)
 
 	// Processing state
-	read_buf := make([]u8, 16384)
+	read_buf := make([]u8, BLOCK_SIZE)
 	defer delete(read_buf)
 
 	// GUI state
-	auto_levels := false
+	auto_levels := true
 	black_level: f32 = -100.0
 	white_level: f32 = -30.0
 	span_db: f32 = 60.0
@@ -477,7 +478,7 @@ void main(){
 
 	// FFT dropdown options
 	fft_options := "64;128;256;512;1024;2048;4096;8192"
-	
+
 	prev_fft_size_index := app.fft_size_index
 
 	for !WindowShouldClose() {
@@ -485,20 +486,20 @@ void main(){
 		// if app.fft_size_index != prev_fft_size_index {
 		// 	new_fft_size := FFT_SIZES[app.fft_size_index]
 		// 	fmt.printf("Changing FFT size from %d to %d\n", app.fft_n, new_fft_size)
-			
+
 		// 	// Clean up old resources
 		// 	if app.fft_cfg != nil {
 		// 		kissfft.kiss_fft_free(app.fft_cfg)
 		// 	}
 		// 	cleanup_app_resources(&app)
-			
+
 		// 	// Initialize with new FFT size
 		// 	init_app_resources(&app, new_fft_size)
-			
+
 		// 	// Reset processing state
 		// 	app.frame_fill = 0
 		// 	app.spectrum_initialized = false
-			
+
 		// 	prev_fft_size_index = app.fft_size_index
 		// }
 
@@ -512,7 +513,7 @@ void main(){
 		if app.pending_retune {
 			// Find the null terminator to get proper string length
 			null_pos := 0
-			for i in 0..<len(app.freq_input) {
+			for i in 0 ..< len(app.freq_input) {
 				if app.freq_input[i] == 0 {
 					null_pos = i
 					break
@@ -521,13 +522,14 @@ void main(){
 			if null_pos == 0 {
 				null_pos = len(app.freq_input)
 			}
-			
+
 			freq_str := string(app.freq_input[:null_pos])
 			freq_str = strings.trim_space(freq_str)
-			
+
 			if len(freq_str) > 0 {
 				if freq_mhz, ok := strconv.parse_f64(freq_str); ok && freq_mhz > 0.01 {
 					new_cf := u32(math.round(freq_mhz * 1e6))
+					fmt.printf("Retuning to %.3f MHz\n", freq_mhz)
 					retune_device(app.dev, &app.center_freq, new_cf)
 				} else {
 					fmt.println("Invalid frequency input, not retuning")
@@ -550,11 +552,17 @@ void main(){
 					time.sleep(time.Millisecond) // brief sleep to avoid busy wait
 					// Add timeout check to prevent infinite blocking
 					if time.since(timeout_start) > 3 * time.Second {
-						fmt.println("Warning: Timeout waiting for samples, checking thread status...")
+						fmt.println(
+							"Warning: Timeout waiting for samples, checking thread status...",
+						)
 						// Check if our receive thread is still alive
 						if app.recv_thread == nil {
 							fmt.println("Receive thread is dead, attempting restart...")
-							app.recv_thread = thread.create_and_start_with_poly_data2(app.dev, 16384, fn = recv_worker)
+							app.recv_thread = thread.create_and_start_with_poly_data2(
+								app.dev,
+								BLOCK_SIZE,
+								fn = recv_worker,
+							)
 							timeout_start = time.now() // Reset timeout
 						} else {
 							break
@@ -570,7 +578,7 @@ void main(){
 			BeginDrawing()
 			ClearBackground(rl.Color{68, 1, 84, 255})
 			DrawFPS(10, 10)
-			
+
 			// Show thread status
 			thread_status := "UNKNOWN"
 			if app.recv_thread == nil {
@@ -578,27 +586,20 @@ void main(){
 			} else {
 				thread_status = "ALIVE"
 			}
-			
+
 			EndDrawing()
 			continue
-		}
-
-		// Debug output occasionally
-		if app.frame_counter % 120 == 0 {
-			fmt.printf(
-				"Bytes read: %d, frame_fill: %d, write_head: %d, auto_levels: %t\n",
-				bytes_read,
-				app.frame_fill,
-				app.write_head,
-				auto_levels,
-			)
 		}
 
 		// Process IQ samples into FFT frames
 		for i := 0; i + 1 < bytes_read; i += 2 {
 			// Safety check: ensure frame_fill is within valid bounds
 			if app.frame_fill < 0 || app.frame_fill > app.fft_n {
-				fmt.printf("ERROR: frame_fill out of bounds: %d (should be 0-%d), resetting\n", app.frame_fill, app.fft_n)
+				fmt.printf(
+					"ERROR: frame_fill out of bounds: %d (should be 0-%d), resetting\n",
+					app.frame_fill,
+					app.fft_n,
+				)
 				app.frame_fill = 0
 			}
 
@@ -644,7 +645,7 @@ void main(){
 				}
 				dc_i /= f32(app.fft_n)
 				dc_q /= f32(app.fft_n)
-				
+
 				// Update running DC average with exponential moving average
 				// This helps track slow DC drift without removing signal
 				if app.frame_counter == 0 {
@@ -662,12 +663,12 @@ void main(){
 					s := app.iq_samples[i]
 					w := app.hann_window[i]
 					// Use the slowly-adapting DC estimate
-					app.windowed[i] = kissfft.kiss_fft_cpx { 
-						re = (s.re - app.dc_i_avg) * w, 
-						im = (s.im - app.dc_q_avg) * w 
+					app.windowed[i] = kissfft.kiss_fft_cpx {
+						re = (s.re - app.dc_i_avg) * w,
+						im = (s.im - app.dc_q_avg) * w,
 					}
 				}
-				
+
 				// Perform FFT on windowed buffer
 				kissfft.kiss_fft(
 					app.fft_cfg,
@@ -679,40 +680,40 @@ void main(){
 				// Calculate power spectrum with proper normalization
 				eps: f32 = 1e-20
 				alpha := app.smoothing_alpha
-                
-                // Scale factor for FFT - KissFFT doesn't normalize
-                fft_scale := 1.0 / f32(app.fft_n)
-                
-                for j in 0 ..< app.fft_n {
-                    re := app.fft_output[j].re * fft_scale
-                    im := app.fft_output[j].im * fft_scale
-                    
-                    // Calculate power (magnitude squared)
-                    power := re * re + im * im
-                    
-                    // More aggressive DC bin suppression and neighbor attenuation
-                    if j == 0 {
-                        // Strong DC suppression
-                        power *= 0.01
-                    } else if j == 1 || j == app.fft_n - 1 {
-                        // Attenuate immediate neighbors of DC
-                        power *= 0.5
-                    }
-                    
-                    // Convert to dB
-                    raw_db := 10.0 * math.log10_f32(math.max(power, eps))
-                    
-                    // Apply smoothing
-                    if !app.spectrum_initialized || alpha <= 0.0 {
-                        app.power_spectrum[j] = raw_db
-                    } else {
-                        prev := app.power_spectrum[j]
-                        // Use smoothed value for display to reduce noise
-                        app.power_spectrum[j] = prev * (1.0 - alpha) + raw_db * alpha
-                    }
-                    app.db_array[j] = app.power_spectrum[j]
-                }
-                app.spectrum_initialized = true
+
+				// Scale factor for FFT - KissFFT doesn't normalize
+				fft_scale := 1.0 / f32(app.fft_n)
+
+				for j in 0 ..< app.fft_n {
+					re := app.fft_output[j].re * fft_scale
+					im := app.fft_output[j].im * fft_scale
+
+					// Calculate power (magnitude squared)
+					power := re * re + im * im
+
+					// More aggressive DC bin suppression and neighbor attenuation
+					if j == 0 {
+						// Strong DC suppression
+						power *= 0.01
+					} else if j == 1 || j == app.fft_n - 1 {
+						// Attenuate immediate neighbors of DC
+						power *= 0.5
+					}
+
+					// Convert to dB
+					raw_db := 10.0 * math.log10_f32(math.max(power, eps))
+
+					// Apply smoothing
+					if !app.spectrum_initialized || alpha <= 0.0 {
+						app.power_spectrum[j] = raw_db
+					} else {
+						prev := app.power_spectrum[j]
+						// Use smoothed value for display to reduce noise
+						app.power_spectrum[j] = prev * (1.0 - alpha) + raw_db * alpha
+					}
+					app.db_array[j] = app.power_spectrum[j]
+				}
+				app.spectrum_initialized = true
 
 				t_fft_end := GetTime()
 				app.fft_time_acc += (t_fft_end - t_fft_start)
@@ -722,24 +723,24 @@ void main(){
 				if auto_levels {
 					// Copy for statistics
 					copy(app.db_tmp, app.db_array)
-					
+
 					// Find 25th percentile for noise floor (more stable than 10th)
 					p25_idx := int(math.round(0.25 * f32(app.fft_n - 1)))
 					if p25_idx < 0 do p25_idx = 0
 					if p25_idx >= app.fft_n do p25_idx = app.fft_n - 1
-					
+
 					floor_db := select_k(app.db_tmp, p25_idx)
-					
+
 					// Find 75th percentile for signal level
 					copy(app.db_tmp, app.db_array)
 					p75_idx := int(math.round(0.75 * f32(app.fft_n - 1)))
 					if p75_idx >= app.fft_n do p75_idx = app.fft_n - 1
-					
+
 					signal_db := select_k(app.db_tmp, p75_idx)
-					
+
 					// Set levels with some headroom
 					black_level = floor_db - 5.0
-					
+
 					// Use dynamic range between floor and signal
 					dynamic_range := signal_db - floor_db
 					if dynamic_range < 20.0 {
@@ -750,20 +751,6 @@ void main(){
 						white_level = signal_db + 10.0
 					}
 
-					// Debug output occasionally
-					if app.frame_counter % 120 == 0 {
-						min_db := slice.min(app.db_array[:])
-						max_db := slice.max(app.db_array[:])
-						fmt.printf(
-							"Auto: min=%.1f max=%.1f floor=%.1f signal=%.1f black=%.1f white=%.1f\n",
-							min_db,
-							max_db,
-							floor_db,
-							signal_db,
-							black_level,
-							white_level,
-						)
-					}
 				}
 
 				// Convert to colors with proper frequency shifting (fftshift)
@@ -780,10 +767,10 @@ void main(){
 					// bins 0 to N/2-1: positive frequencies (0 to Nyquist)
 					// bins N/2 to N-1: negative frequencies (-Nyquist to 0)
 					// We want DC in the center of display
-					
+
 					bin: int
 					half_n := app.fft_n / 2
-					
+
 					// Rearrange for display with DC in center:
 					if x < half_n {
 						// Left half of display: negative frequencies
@@ -794,14 +781,14 @@ void main(){
 						// Map from bins 0 to N/2-1
 						bin = x - half_n
 					}
-					
+
 					// Additional check: mirror correction for complex conjugate symmetry
 					// Since we're dealing with complex IQ data, not real data,
 					// we shouldn't have conjugate symmetry issues, but let's be safe
 					if bin >= app.fft_n {
 						bin = app.fft_n - 1
 					}
-					
+
 					db_val := app.db_array[bin]
 
 					// Normalize to [0, 1]
@@ -816,7 +803,7 @@ void main(){
 					// Map to grayscale value (0-255) and store in R channel
 					gray_val := u8(math.clamp(v * 255.0, 0.0, 255.0))
 					app.waterfall_line[x] = Color{gray_val, gray_val, gray_val, 255}
-                }
+				}
 
 				t_tex_start := GetTime()
 				// Update texture - full width
@@ -895,6 +882,18 @@ void main(){
 		)
 		EndShaderMode()
 
+		// Draw a red line in the middle to indicate DC
+		dc_line_x := f32((GetScreenWidth() - app.sidebar_width) / 2)
+		DrawLine(
+			i32(dc_line_x),
+			0,
+			i32(dc_line_x),
+			GetScreenHeight(),
+			rl.Color{245, 191, 100, 255},
+		)
+
+		// Draw a line where the cursor is and a label with the hovered frequency in MHz
+		draw_cursor_freq()
 
 		// Frequency input box
 		freq_box := Rectangle{ui_x, ui_y, 120, 24}
@@ -982,23 +981,11 @@ void main(){
 		overlap_box := Rectangle{ui_x, ui_y, 20, 20}
 		GuiCheckBox(overlap_box, "50% Overlap", &app.overlap_enabled)
 
-		// Performance stats
-		now := GetTime()
-		if now - app.stats_time_last >= 1.0 && app.fft_batches > 0 {
-			avg_fft_ms := (app.fft_time_acc / f64(app.fft_batches)) * 1000.0
-			avg_tex_ms := (app.tex_time_acc / f64(app.tex_batches)) * 1000.0
-			fmt.printf(
-				"AVG FFT %.3f ms  AVG Upload %.3f ms  batches=%d\n",
-				avg_fft_ms,
-				avg_tex_ms,
-				app.fft_batches,
-			)
-			app.fft_time_acc = 0.0
-			app.tex_time_acc = 0.0
-			app.fft_batches = 0
-			app.tex_batches = 0
-			app.stats_time_last = now
-		}
+		// Draw FPS in bottom right corner
+
+		fps := GetFPS()
+		fps_text := fmt.tprintf("FPS: %d", fps)
+		DrawText(cstring(raw_data(fps_text)), GetScreenWidth() - 100, GetScreenHeight() - 30, 20, rl.Color{245, 191, 100, 255})
 
 		EndDrawing()
 
@@ -1015,4 +1002,65 @@ void main(){
 
 next_row :: proc(y: f32, skip: f32 = 30.0) -> f32 {
 	return y + skip
+}
+
+cols :: proc(
+	start_y: f32,
+	available_space: f32,
+	col_ratios: []f32,
+	height: f32 = 30.0,
+	margin: f32 = 10.0,
+) -> []rl.Rectangle {
+	total_ratio: f32 = 0
+	for ratio in col_ratios {
+		total_ratio += ratio
+	}
+	cols := make([]rl.Rectangle, len(col_ratios))
+	defer delete(cols)
+
+	x := margin
+	for i in 0 ..< len(col_ratios) {
+		width := (available_space - 2 * margin) * col_ratios[i] / total_ratio
+		cols[i] = rl.Rectangle{x, start_y, width, height}
+		x += width + margin
+	}
+
+	return cols
+}
+
+draw_cursor_freq :: proc() {
+	using rl
+	mouse_x := GetMouseX()
+	waterfall_width := GetScreenWidth() - app.sidebar_width
+	if mouse_x < waterfall_width {
+		// Draw vertical line at mouse X position
+		DrawRectangle(i32(mouse_x) - 4, 0, 8, GetScreenHeight(), rl.Color{245, 191, 100, 100})
+		DrawLine(i32(mouse_x), 0, i32(mouse_x), GetScreenHeight(), rl.Color{245, 191, 100, 255})
+		// Calculate frequency at this X position
+		// The waterfall spans from -sample_rate/2 to +sample_rate/2 around center_freq
+		// with DC in the center
+		normalized_x := f64(mouse_x) / f64(waterfall_width) // 0.0 to 1.0 across waterfall
+		freq_offset := (normalized_x - 0.5) * f64(SAMPLE_RATE) // -sample_rate/2 to +sample_rate/2
+		freq_hz := f64(app.center_freq) + freq_offset
+		freq_mhz := freq_hz / 1e6
+		freq_str := fmt.tprintf("%.3f MHz", freq_mhz)
+
+		// Draw frequency label, keeping it within the waterfall area
+		label_x := mouse_x + 10
+		if label_x + 100 > waterfall_width {
+			label_x = mouse_x - 100
+		}
+		if label_x < 0 do label_x = 10
+
+		DrawText(cstring(raw_data(freq_str)), i32(label_x), GetScreenHeight() - 60, 20, rl.Color{245, 191, 100, 255})
+
+		if IsMouseButtonPressed(rl.MouseButton.LEFT) {
+			// Set new center frequency based on mouse click
+			new_freq := u32(math.round(freq_hz))
+			fmt.printf("Setting new center frequency: %.3f MHz\n", freq_mhz)
+			app.center_freq = new_freq
+			retune_device(app.dev, &app.center_freq, new_freq)
+		}
+	}
+
 }
