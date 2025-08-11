@@ -25,8 +25,8 @@ INIT_FFT_SIZE :: 8192
 // MAX_FFT_SIZE :: 8192
 HISTORY_ROWS :: 1024
 SAMPLE_RATE :: 2048000 // 2.048 MHz
-// CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
-CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
+CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
+// CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
 // CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
 GAIN_TENTHSDB :: -1 // -1 for auto-gain
 DEFAULT_OVERLAP_ENABLED :: true // Enable 50% FFT overlap by default
@@ -120,16 +120,19 @@ ring_buffer_init :: proc(rb: ^RingBuffer, size: int) {
 	rb.mutex = sync.Mutex{}
 }
 
-// Write to ring buffer (non-blocking, drops on overflow)
+// Write to ring buffer (non-blocking, drops entire frame if won't fit)
 ring_buffer_write :: proc(rb: ^RingBuffer, data: []u8) {
 	sync.mutex_lock(&rb.mutex)
 	defer sync.mutex_unlock(&rb.mutex)
 
+	// Check if entire frame will fit
+	available_space := (rb.tail - rb.head - 1 + len(rb.buf)) % len(rb.buf)
+	if len(data) > available_space do return // drop entire frame
+
+	// Write entire frame
 	for byte in data {
-		next := (rb.head + 1) % len(rb.buf)
-		if next == rb.tail do break // buffer full, drop data
 		rb.buf[rb.head] = byte
-		rb.head = next
+		rb.head = (rb.head + 1) % len(rb.buf)
 	}
 }
 
