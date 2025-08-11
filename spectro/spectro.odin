@@ -31,7 +31,7 @@ CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
 // CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
 GAIN_TENTHSDB :: -1 // -1 for auto-gain
 DEFAULT_OVERLAP_ENABLED :: true // Enable 50% FFT overlap by default
-// COLOR_SPECTRUM :: rl.Color{245, 191, 100, 255}
+COLOR_HIGHLIGHT :: rl.Color{245, 191, 100, 255}
 COLOR_SPECTRUM :: rl.Color{0, 255, 255, 255} // Bright cyan for cyber theme
 
 // Available FFT sizes
@@ -133,6 +133,12 @@ App :: struct {
 	min_db_waterfall:              f32, // dB low limit for spectrum display
 	min_db_spectrum:     f32, // Min dB for spectrum plot
 	max_db_spectrum:     f32, // Max dB for spectrum plot
+	
+	// Peak detection and hold
+	peaks_enabled:        bool,  // Enable peak detection and display
+	peak_hold_time:       f32,   // Peak hold time in seconds
+	peak_spectrum:        []f32, // Peak values for each frequency bin
+	peak_timestamps:      []f64, // Timestamp when each peak was last updated
 	
 }
 
@@ -360,6 +366,18 @@ init_app_resources :: proc(app: ^App, fft_n: int) {
 	app.waterfall_history_write_index = 0
 	app.averaged_waterfall_spectrum = make([]f32, fft_n)
 
+	// Initialize peak detection
+	app.peaks_enabled = false
+	app.peak_hold_time = 2.0 // Default 2 seconds
+	app.peak_spectrum = make([]f32, fft_n)
+	app.peak_timestamps = make([]f64, fft_n)
+	
+	// Initialize peak arrays with very low values
+	for i in 0 ..< fft_n {
+		app.peak_spectrum[i] = -200.0 // Very low dB value
+		app.peak_timestamps[i] = 0.0
+	}
+
 	// Make Hann window with proper normalization for FFT
 	for i in 0 ..< fft_n {
 		app.hann_window[i] = 0.5 - 0.5 * math.cos(2.0 * math.PI * f32(i) / f32(fft_n - 1))
@@ -425,6 +443,10 @@ cleanup_app_resources :: proc(app: ^App) {
 		delete(app.waterfall_frame_history)
 	}
 	if app.averaged_waterfall_spectrum != nil do delete(app.averaged_waterfall_spectrum)
+
+	// Cleanup peak detection buffers
+	if app.peak_spectrum != nil do delete(app.peak_spectrum)
+	if app.peak_timestamps != nil do delete(app.peak_timestamps)
 
 	// Free KissFFT configuration
 	// if app.fft_cfg != nil {
@@ -855,6 +877,22 @@ void main(){
 				for j in 0 ..< app.fft_n {
 					app.db_array[j] = app.power_spectrum[j]
 				}
+
+				// Update peak detection if enabled
+				if app.peaks_enabled {
+					current_time := GetTime()
+					for j in 0 ..< app.fft_n {
+						current_db := app.power_spectrum[j]
+						
+						// Check if current value is higher than stored peak or if peak has expired
+						time_since_peak := current_time - app.peak_timestamps[j]
+						if current_db > app.peak_spectrum[j] || time_since_peak > f64(app.peak_hold_time) {
+							app.peak_spectrum[j] = current_db
+							app.peak_timestamps[j] = current_time
+						}
+					}
+				}
+
 				app.spectrum_initialized = true
 
 				t_fft_end := GetTime()
@@ -998,7 +1036,7 @@ void main(){
 		ui_x := f32(rl.GetScreenWidth() - app.sidebar_width + 10)
 		ui_y := f32(10)
 		slider_x := ui_x + 110
-		slider_width := f32(f32(app.sidebar_width) - 120)
+		slider_width: f32 = f32(app.sidebar_width) - 130
 
 		// Render
 		BeginDrawing()
@@ -1037,11 +1075,11 @@ void main(){
 
 		// Display current freq in orange in the top center
 		freq_text := fmt.ctprintf("%.3f MHz", f64(app.center_freq) / 1e6)
-		// text_width := MeasureText(freq_text, 20)
+		text_width := MeasureText(freq_text, 40)
 		DrawText(
-			freq_text,
-			i32((GetScreenWidth() - app.sidebar_width) / 2) + 10,
-			10,
+			cstring(freq_text),
+			i32((GetScreenWidth() - app.sidebar_width) / 2) - text_width / 2,
+			20,
 			40,
 			rl.Color{245, 191, 100, 255},
 		)
@@ -1050,7 +1088,7 @@ void main(){
 		dc_line_x := f32((GetScreenWidth() - app.sidebar_width) / 2)
 		DrawLine(
 			i32(dc_line_x),
-			0,
+			60,
 			i32(dc_line_x),
 			GetScreenHeight(),
 			rl.Color{245, 191, 100, 255},
@@ -1090,9 +1128,7 @@ void main(){
 		// Auto levels checkbox
 		ui_y = next_row(ui_y)
 		auto_box := Rectangle{ui_x, ui_y, 20, 20}
-		if GuiCheckBox(auto_box, "Auto Levels", &auto_levels) {
-			// Checkbox was clicked, auto_levels is already updated by GuiCheckBox
-		}
+		GuiCheckBox(auto_box, "Auto Level Waterfall", &auto_levels)
 
 		if !auto_levels {
 			// Manual black/white level sliders
@@ -1120,28 +1156,28 @@ void main(){
 			}
 
 			ui_y = next_row(ui_y) // add some space before next controls
-			gamma_rect := Rectangle{slider_x, ui_y, 200, 20}
+			gamma_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 			GuiSliderBar(gamma_rect, "Gamma", nil, &gamma_val, 0.3, 2.5)
 		} else {
 			// Auto mode: span and gamma controls
 			ui_y = next_row(ui_y)
-			span_rect := Rectangle{slider_x, ui_y, 200, 20}
+			span_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 			GuiSliderBar(span_rect, "Span dB", nil, &span_db, 10.0, 120.0)
 
 			ui_y = next_row(ui_y)
-			gamma_rect := Rectangle{slider_x, ui_y, 200, 20}
+			gamma_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 			GuiSliderBar(gamma_rect, "Gamma", nil, &gamma_val, 0.3, 2.5)
 		}
 
 		// Frame skip slider
 		ui_y = next_row(ui_y)
-		skip_rect := Rectangle{slider_x, ui_y, 200, 20}
+		skip_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 		GuiSliderBar(skip_rect, "Skip", nil, &frame_skip_display, 0.0, 20.0)
 		app.frame_skip = int(frame_skip_display + 0.5)
 
 		// Smoothing control (placed below FFT selector)
 		ui_y = next_row(ui_y) // add some space
-		smooth_rect := Rectangle{slider_x, ui_y, 200, 20}
+		smooth_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 		prev_alpha := app.smoothing_alpha
 		GuiSliderBar(smooth_rect, "Avg (EMA)", nil, &app.smoothing_alpha, 0.0, 0.9)
 		if math.abs(prev_alpha - app.smoothing_alpha) > 0.001 {
@@ -1158,7 +1194,7 @@ void main(){
 		// Show averaging frames slider only when averaging is enabled
 		if app.plot_averaging_enabled {
 			ui_y = next_row(ui_y)
-			frames_rect := Rectangle{slider_x, ui_y, 200, 20}
+			frames_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 			prev_frames := app.averaging_frames
 			frames_float := f32(app.averaging_frames)
 			GuiSliderBar(frames_rect, "Plot Frames", nil, &frames_float, 2.0, 50.0)
@@ -1197,7 +1233,7 @@ void main(){
 		// Show waterfall averaging frames slider only when averaging is enabled
 		if app.waterfall_averaging_enabled {
 			ui_y = next_row(ui_y)
-			waterfall_frames_rect := Rectangle{slider_x, ui_y, 200, 20}
+			waterfall_frames_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 			prev_waterfall_frames := app.waterfall_averaging_frames
 			waterfall_frames_float := f32(app.waterfall_averaging_frames)
 			GuiSliderBar(waterfall_frames_rect, "Waterfall Frames", nil, &waterfall_frames_float, 2.0, 20.0)
@@ -1219,6 +1255,28 @@ void main(){
 					app.waterfall_frame_history[i] = make([]f32, app.fft_n)
 				}
 				app.waterfall_history_write_index = 0
+			}
+		}
+
+		// Peak detection controls
+		ui_y = next_row(ui_y) // add some space
+		peaks_box := Rectangle{ui_x, ui_y, 20, 20}
+		prev_peaks_enabled := app.peaks_enabled
+		GuiCheckBox(peaks_box, "Show Peaks", &app.peaks_enabled)
+		
+		// Show peak hold time slider only when peaks are enabled
+		if app.peaks_enabled {
+			ui_y = next_row(ui_y)
+			peak_hold_rect := Rectangle{slider_x, ui_y, slider_width, 20}
+			GuiSliderBar(peak_hold_rect, "Peak Hold (s)", nil, &app.peak_hold_time, 0.5, 10.0)
+		}
+		
+		// If peaks were just enabled, reset all peak data
+		if !prev_peaks_enabled && app.peaks_enabled {
+			current_time := GetTime()
+			for i in 0 ..< app.fft_n {
+				app.peak_spectrum[i] = -200.0 // Very low dB value
+				app.peak_timestamps[i] = current_time
 			}
 		}
 
@@ -1527,6 +1585,7 @@ draw_spectrum_plot :: proc() {
 	
 	// Cyber theme highlight color (bright cyan)
 	spectrum_color := COLOR_SPECTRUM  // Cyan
+	peak_color := COLOR_HIGHLIGHT // Yellow for peaks
 	grid_color := rl.Color{100, 100, 120, 100}
 
 
@@ -1578,6 +1637,57 @@ draw_spectrum_plot :: proc() {
 			y2 = math.clamp(y2, plot_y, plot_y + plot_height)
 			
 			DrawLine(i32(x), y1, i32(x + 1), y2, spectrum_color)
+		}
+	}
+
+	// Draw peak spectrum if enabled
+	if app.peaks_enabled && len(app.peak_spectrum) >= 2 {
+		half_n := app.fft_n / 2
+		
+		for x in 0..<waterfall_width-1 {
+			// Map x position to frequency bin (with fftshift)
+			bin_f := f32(x) * f32(app.fft_n) / f32(waterfall_width)
+			bin := int(bin_f)
+			
+			// Apply fftshift mapping (same as spectrum)
+			actual_bin: int
+			if bin < half_n {
+				actual_bin = bin + half_n
+			} else {
+				actual_bin = bin - half_n
+			}
+			
+			// Clamp to valid range
+			if actual_bin >= app.fft_n do actual_bin = app.fft_n - 1
+			if actual_bin < 0 do actual_bin = 0
+			
+			// Get next bin for line drawing
+			next_bin_f := f32(x + 1) * f32(app.fft_n) / f32(waterfall_width)
+			next_bin := int(next_bin_f)
+			next_actual_bin: int
+			if next_bin < half_n {
+				next_actual_bin = next_bin + half_n
+			} else {
+				next_actual_bin = next_bin - half_n
+			}
+			if next_actual_bin >= app.fft_n do next_actual_bin = app.fft_n - 1
+			if next_actual_bin < 0 do next_actual_bin = 0
+			
+			// Scale peak dB values to plot coordinates
+			peak_db1 := app.peak_spectrum[actual_bin]
+			peak_db2 := app.peak_spectrum[next_actual_bin]
+			
+			y1_norm := (max_db - peak_db1) / db_range
+			y2_norm := (max_db - peak_db2) / db_range
+			
+			y1 := plot_y + i32(y1_norm * f32(plot_height))
+			y2 := plot_y + i32(y2_norm * f32(plot_height))
+			
+			// Clamp to plot area
+			y1 = math.clamp(y1, plot_y, plot_y + plot_height)
+			y2 = math.clamp(y2, plot_y, plot_y + plot_height)
+			
+			DrawLine(i32(x), y1, i32(x + 1), y2, peak_color)
 		}
 	}
 
