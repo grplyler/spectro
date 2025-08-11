@@ -15,9 +15,9 @@ import "core:time"
 import "base:runtime"
 import rl "vendor:raylib"
 
+import fft "../../offt"
 import "../../rtlsdr-odin/rtlsdr"
-// import fft "../../offt"
-import kissfft "../vendor/kissfft"
+// import kissfft "../vendor/kissfft"
 import "utils"
 
 // Configuration constants
@@ -50,14 +50,14 @@ App :: struct {
 
 	// Dynamic FFT state
 	fft_n:                int,
-	// fft_plan:             fft.FFTPlan,
-	fft_cfg:              kissfft.kiss_fft_cfg,
+	fft_plan:             fft.FFTPlan,
+	// fft_cfg:              kissfft.kiss_fft_cfg,
 	hann_window:          []f32,
 
 	// Processing buffers  
-	iq_samples:           []kissfft.kiss_fft_cpx,
-	fft_output:           []kissfft.kiss_fft_cpx,
-	windowed:             []kissfft.kiss_fft_cpx,
+	iq_samples:           []fft.Complex32,
+	fft_output:           []fft.Complex32,
+	windowed:             []fft.Complex32,
 	power_spectrum:       []f32,
 	db_array:             []f32,
 	db_tmp:               []f32, // for quickselect
@@ -76,7 +76,7 @@ App :: struct {
 	freq_input:           [32]u8,
 	freq_edit:            bool,
 	pending_retune:       bool,
-	cursor_set_retune: bool,
+	cursor_set_retune:    bool,
 
 	// Frame skipping for waterfall speed
 	frame_skip:           int,
@@ -274,7 +274,11 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 
 		// Restart the async read thread
 		fmt.println("Restarting async read...")
-		app.recv_thread = thread.create_and_start_with_poly_data2(dev, BLOCK_SIZE, fn = recv_worker)
+		app.recv_thread = thread.create_and_start_with_poly_data2(
+			dev,
+			BLOCK_SIZE,
+			fn = recv_worker,
+		)
 
 		// Give the new thread time to start
 		// time.sleep(20 * time.Millisecond)
@@ -284,7 +288,11 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 		fmt.printf("Retune failed (%d) for %.3f MHz\n", r, f64(new_cf) / 1e6)
 		// Restart thread even if retune failed to keep receiving
 		fmt.println("Restarting async read after failed retune...")
-		app.recv_thread = thread.create_and_start_with_poly_data2(dev, BLOCK_SIZE, fn = recv_worker)
+		app.recv_thread = thread.create_and_start_with_poly_data2(
+			dev,
+			BLOCK_SIZE,
+			fn = recv_worker,
+		)
 	}
 	return r
 }
@@ -295,13 +303,14 @@ init_app_resources :: proc(app: ^App, fft_n: int) {
 	app.sidebar_width = 300 // Default sidebar width
 
 	// Create FFT plan
-	app.fft_cfg = kissfft.kiss_fft_alloc(i32(fft_n), 0, nil, nil)
+	// app.fft_cfg = kissfft.kiss_fft_alloc(i32(fft_n), 0, nil, nil)
+	app.fft_plan = fft.fft_make_plan(fft_n, SAMPLE_RATE)
 
 	// Allocate buffers
 	app.hann_window = make([]f32, fft_n)
-	app.iq_samples = make([]kissfft.kiss_fft_cpx, fft_n)
-	app.fft_output = make([]kissfft.kiss_fft_cpx, fft_n)
-	app.windowed = make([]kissfft.kiss_fft_cpx, fft_n)
+	app.iq_samples = make([]fft.Complex32, fft_n)
+	app.fft_output = make([]fft.Complex32, fft_n)
+	app.windowed = make([]fft.Complex32, fft_n)
 	app.power_spectrum = make([]f32, fft_n)
 	app.db_array = make([]f32, fft_n)
 	app.db_tmp = make([]f32, fft_n)
@@ -418,7 +427,7 @@ main :: proc() {
 	// Initialize Raylib
 	rl.SetConfigFlags(rl.ConfigFlags{.WINDOW_RESIZABLE})
 	InitWindow(1400, 1024, "Spectro Analyzer")
-	SetTargetFPS(90)
+	SetTargetFPS(60)
 	defer CloseWindow()
 	rl.GuiLoadStyle("spectro/resources/style_cyber.rgs")
 
@@ -607,7 +616,7 @@ void main(){
 			if app.frame_fill < app.fft_n {
 				I := u8_to_f32_centered(read_buf[i])
 				Q := u8_to_f32_centered(read_buf[i + 1])
-				app.iq_samples[app.frame_fill] = kissfft.kiss_fft_cpx {
+				app.iq_samples[app.frame_fill] = fft.Complex32 {
 					re = I,
 					im = Q,
 				}
@@ -663,18 +672,32 @@ void main(){
 					s := app.iq_samples[i]
 					w := app.hann_window[i]
 					// Use the slowly-adapting DC estimate
-					app.windowed[i] = kissfft.kiss_fft_cpx {
+					app.windowed[i] = fft.Complex32 {
 						re = (s.re - app.dc_i_avg) * w,
 						im = (s.im - app.dc_q_avg) * w,
 					}
 				}
 
 				// Perform FFT on windowed buffer
-				kissfft.kiss_fft(
-					app.fft_cfg,
-					&app.windowed[0],
-					// &app.iq_samples[0],
-					&app.fft_output[0],
+				// fft.kiss_fft(
+				// 	app.fft_cfg,
+				// 	&app.windowed[0],
+				// 	// &app.iq_samples[0],
+				// 	&app.fft_output[0],
+				// )
+
+				// Apply Hann Window
+				// fft.fft_apply_hann(
+				// 	app.iq_samples[0],
+				// 	&app.hann_window[0],
+				// 	app.fft_n,
+				// )
+
+
+				fft.fft_execute(
+					&app.fft_plan,
+					app.windowed,
+					app.fft_output,
 				)
 
 				// Calculate power spectrum with proper normalization
@@ -828,7 +851,7 @@ void main(){
 					if overlap_size > 0 && overlap_size < app.fft_n {
 						// Important: Use memmove semantics for overlapping copy
 						// Copy to temporary buffer first to avoid corruption
-						temp := make([]kissfft.kiss_fft_cpx, overlap_size)
+						temp := make([]fft.Complex32, overlap_size)
 						defer delete(temp)
 						for j in 0 ..< overlap_size {
 							temp[j] = app.iq_samples[j + overlap_size]
@@ -982,10 +1005,32 @@ void main(){
 		GuiCheckBox(overlap_box, "50% Overlap", &app.overlap_enabled)
 
 		// Draw FPS in bottom right corner
+		now := GetTime()
+		if now - app.stats_time_last >= 1.0 && app.fft_batches > 0 {
+			avg_fft_ms := (app.fft_time_acc / f64(app.fft_batches)) * 1000.0
+			avg_tex_ms := (app.tex_time_acc / f64(app.tex_batches)) * 1000.0
+			fmt.printf(
+				"AVG FFT %.3f ms  AVG Upload %.3f ms  batches=%d\n",
+				avg_fft_ms,
+				avg_tex_ms,
+				app.fft_batches,
+			)
+			app.fft_time_acc = 0.0
+			app.tex_time_acc = 0.0
+			app.fft_batches = 0
+			app.tex_batches = 0
+			app.stats_time_last = now
+		}
 
 		fps := GetFPS()
 		fps_text := fmt.tprintf("FPS: %d", fps)
-		DrawText(cstring(raw_data(fps_text)), GetScreenWidth() - 100, GetScreenHeight() - 30, 20, rl.Color{245, 191, 100, 255})
+		DrawText(
+			cstring(raw_data(fps_text)),
+			GetScreenWidth() - 100,
+			GetScreenHeight() - 30,
+			20,
+			rl.Color{245, 191, 100, 255},
+		)
 
 		EndDrawing()
 
@@ -1052,7 +1097,13 @@ draw_cursor_freq :: proc() {
 		}
 		if label_x < 0 do label_x = 10
 
-		DrawText(cstring(raw_data(freq_str)), i32(label_x), GetScreenHeight() - 60, 20, rl.Color{245, 191, 100, 255})
+		DrawText(
+			cstring(raw_data(freq_str)),
+			i32(label_x),
+			GetScreenHeight() - 60,
+			20,
+			rl.Color{245, 191, 100, 255},
+		)
 
 		if IsMouseButtonPressed(rl.MouseButton.LEFT) {
 			// Set new center frequency based on mouse click
