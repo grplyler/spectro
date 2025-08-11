@@ -107,6 +107,9 @@ App :: struct {
 	// Thread management
 	recv_thread:          ^thread.Thread,
 	should_stop_recv:     bool,
+
+	// Gui
+	sidebar_width:         i32, // Width of the sidebar for controls
 }
 
 app: App
@@ -288,6 +291,7 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 // Initialize app resources for given FFT size
 init_app_resources :: proc(app: ^App, fft_n: int) {
     app.fft_n = fft_n
+	app.sidebar_width = 300 // Default sidebar width
 
     // Create FFT plan
     app.fft_cfg = kissfft.kiss_fft_alloc(i32(fft_n), 0, nil, nil)
@@ -412,9 +416,10 @@ main :: proc() {
 
 	// Initialize Raylib
 	rl.SetConfigFlags(rl.ConfigFlags{.WINDOW_RESIZABLE})
-	InitWindow(1200, 600, "RTL-SDR Spectral Waterfall")
+	InitWindow(1400, 800, "RTL-SDR Spectral Waterfall")
 	SetTargetFPS(60)
 	defer CloseWindow()
+	rl.GuiLoadStyle("/Users/ryan/code/spectro/spectro/resources/style_cyber.rgs")
 
 	// Initialize app resources with default FFT size
 	init_app_resources(&app, INIT_FFT_SIZE)
@@ -563,7 +568,7 @@ void main(){
 		if bytes_read == 0 {
 			// Draw the UI even if we have no data to process
 			BeginDrawing()
-			ClearBackground(BLACK)
+			ClearBackground(rl.Color{68, 1, 84, 255})
 			DrawFPS(10, 10)
 			
 			// Show thread status
@@ -573,23 +578,6 @@ void main(){
 			} else {
 				thread_status = "ALIVE"
 			}
-			
-			DrawText(fmt.ctprintf("Waiting for samples... Thread: %s", thread_status), 10, 50, 16, YELLOW)
-			
-			// Show basic frequency info even without data
-			freq_actual := rtlsdr.rtlsdr_get_center_freq(app.dev)
-			DrawText(
-				fmt.ctprintf(
-					"%.1f MHz (hw %.1f)  %.2f MS/s",
-					f64(app.center_freq) / 1e6,
-					f64(freq_actual) / 1e6,
-					f64(SAMPLE_RATE) / 1e6,
-				),
-				10,
-				30,
-				16,
-				GREEN,
-			)
 			
 			EndDrawing()
 			continue
@@ -684,6 +672,7 @@ void main(){
 				kissfft.kiss_fft(
 					app.fft_cfg,
 					&app.windowed[0],
+					// &app.iq_samples[0],
 					&app.fft_output[0],
 				)
 
@@ -872,9 +861,13 @@ void main(){
 			}
 		}
 
+		ui_x := f32(rl.GetScreenWidth() - app.sidebar_width + 10)
+		ui_y := f32(10)
+		slider_x := ui_x + 80
+
 		// Render
 		BeginDrawing()
-		ClearBackground(BLACK)
+		ClearBackground(rl.Color{68, 1, 84, 255})
 
 		// Draw waterfall FIRST, before GUI elements
 		// Also fix the rectangle to not overlap with GUI area
@@ -895,39 +888,16 @@ void main(){
 		DrawTexturePro(
 			app.ring_texture,
 			Rectangle{0, 0, f32(app.ring_texture.width), f32(app.ring_texture.height)},
-			Rectangle{0, 300, f32(GetScreenWidth()), f32(GetScreenHeight() - 300)},
+			Rectangle{0, 0, f32(GetScreenWidth() - app.sidebar_width), f32(GetScreenHeight())},
 			Vector2{0, 0},
 			0.0,
 			WHITE,
 		)
 		EndShaderMode()
 
-		// NOW draw GUI elements on top
-		// Draw info and FPS
-		DrawFPS(10, 10)
-
-		freq_actual := rtlsdr.rtlsdr_get_center_freq(app.dev)
-		DrawText(
-			fmt.ctprintf(
-				"%.1f MHz (hw %.1f)  %.2f MS/s  B=%.0f W=%.0f %s G=%.2f N=%d %s",
-				f64(app.center_freq) / 1e6,
-				f64(freq_actual) / 1e6,
-				f64(SAMPLE_RATE) / 1e6,
-				black_level,
-				white_level,
-				auto_levels ? "AUTO" : "MAN",
-				gamma_val,
-				app.fft_n,
-				app.overlap_enabled ? "OVL" : "NOVL",
-			),
-			10,
-			30,
-			16,
-			GREEN,
-		)
 
 		// Frequency input box
-		freq_box := Rectangle{10, 54, 120, 24}
+		freq_box := Rectangle{ui_x, ui_y, 120, 24}
 		toggled := GuiTextBox(
 			freq_box,
 			cstring(raw_data(app.freq_input[:])),
@@ -943,12 +913,12 @@ void main(){
 			}
 		}
 
-		tune_btn := Rectangle{140, 54, 60, 24}
+		ui_y = next_row(ui_y)
+		tune_btn := Rectangle{ui_x, ui_y, 60, 24}
 		if GuiButton(tune_btn, "Tune") {
 			fmt.println("Tune button pressed")
 			app.pending_retune = true
 		}
-		DrawText("Freq MHz", 205, 58, 16, LIGHTGRAY)
 
 		if app.freq_edit &&
 		   (IsKeyPressed(KeyboardKey.ENTER) || IsKeyPressed(KeyboardKey.KP_ENTER)) {
@@ -957,41 +927,49 @@ void main(){
 		}
 
 		// Auto levels checkbox
-		auto_box := Rectangle{10, 84, 20, 20}
-		if GuiCheckBox(auto_box, "Auto", &auto_levels) {
+		ui_y = next_row(ui_y)
+		auto_box := Rectangle{ui_x, ui_y, 20, 20}
+		if GuiCheckBox(auto_box, "Auto Levels", &auto_levels) {
 			// Checkbox was clicked, auto_levels is already updated by GuiCheckBox
 		}
 
 		if !auto_levels {
 			// Manual black/white level sliders
-			black_rect := Rectangle{100, 110, 200, 20}
+			ui_y = next_row(ui_y)
+			black_rect := Rectangle{slider_x, ui_y, 200, 20}
 			GuiSliderBar(black_rect, "Black dB", nil, &black_level, -140.0, 140.0)
 
-			white_rect := Rectangle{100, 136, 200, 20}
+			ui_y = next_row(ui_y)
+			white_rect := Rectangle{slider_x, ui_y, 200, 20}
 			GuiSliderBar(white_rect, "White dB", nil, &white_level, -140.0, 140.0)
 
 			if white_level <= black_level + 0.5 {
 				white_level = black_level + 0.5
 			}
 
-			gamma_rect := Rectangle{100, 162, 200, 20}
+			ui_y = next_row(ui_y) // add some space before next controls
+			gamma_rect := Rectangle{slider_x, ui_y, 200, 20}
 			GuiSliderBar(gamma_rect, "Gamma", nil, &gamma_val, 0.3, 2.5)
 		} else {
 			// Auto mode: span and gamma controls
-			span_rect := Rectangle{100, 110, 200, 20}
+			ui_y = next_row(ui_y)
+			span_rect := Rectangle{slider_x, ui_y, 200, 20}
 			GuiSliderBar(span_rect, "Span dB", nil, &span_db, 10.0, 120.0)
 
-			gamma_rect := Rectangle{100, 136, 200, 20}
+			ui_y = next_row(ui_y)
+			gamma_rect := Rectangle{slider_x, ui_y, 200, 20}
 			GuiSliderBar(gamma_rect, "Gamma", nil, &gamma_val, 0.3, 2.5)
 		}
 
 		// Frame skip slider
-		skip_rect := Rectangle{100, auto_levels ? 162 : 188, 200, 20}
+		ui_y = next_row(ui_y)
+		skip_rect := Rectangle{slider_x, ui_y, 200, 20}
 		GuiSliderBar(skip_rect, "Skip", nil, &frame_skip_display, 0.0, 20.0)
 		app.frame_skip = int(frame_skip_display + 0.5)
 
 		// Smoothing control (placed below FFT selector)
-		smooth_rect := Rectangle{100, auto_levels ? 216 : 242, 200, 20}
+		ui_y = next_row(ui_y) // add some space
+		smooth_rect := Rectangle{slider_x, ui_y, 200, 20}
 		prev_alpha := app.smoothing_alpha
 		GuiSliderBar(smooth_rect, "Avg (EMA)", nil, &app.smoothing_alpha, 0.0, 0.9)
 		if math.abs(prev_alpha - app.smoothing_alpha) > 0.001 {
@@ -1000,7 +978,8 @@ void main(){
 		}
 
 		// FFT overlap control
-		overlap_box := Rectangle{100, auto_levels ? 240 : 266, 20, 20}
+		ui_y = next_row(ui_y) // add some space
+		overlap_box := Rectangle{ui_x, ui_y, 20, 20}
 		GuiCheckBox(overlap_box, "50% Overlap", &app.overlap_enabled)
 
 		// Performance stats
@@ -1031,4 +1010,9 @@ void main(){
 	// cleanup_app_resources(&app)  // clean up app resources
 	fmt.println("Exiting RTL-SDR Spectral Waterfall")
 
+}
+
+
+next_row :: proc(y: f32, skip: f32 = 30.0) -> f32 {
+	return y + skip
 }
