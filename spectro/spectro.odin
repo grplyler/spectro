@@ -99,6 +99,20 @@ App :: struct {
 	smoothing_alpha:      f32,
 	spectrum_initialized: bool,
 
+	// Plot averaging
+	plot_averaging_enabled: bool,
+	averaging_frames:       int,
+	frame_history:          [][]f32, // circular buffer of power spectra
+	history_write_index:    int,
+	averaged_spectrum:      []f32,
+
+	// Waterfall averaging (separate from plot averaging)
+	waterfall_averaging_enabled: bool,
+	waterfall_averaging_frames:  int,
+	waterfall_frame_history:     [][]f32, // circular buffer for waterfall data
+	waterfall_history_write_index: int,
+	averaged_waterfall_spectrum: []f32,
+
 	// FFT overlap control
 	overlap_enabled:      bool,
 	prev_overlap_enabled: bool,
@@ -326,6 +340,26 @@ init_app_resources :: proc(app: ^App, fft_n: int) {
 	// Full waterfall line for all frequencies
 	app.waterfall_line = make([]rl.Color, fft_n)
 
+	// Initialize plot averaging
+	app.plot_averaging_enabled = false
+	app.averaging_frames = 10 // Default to 10 frames
+	app.frame_history = make([][]f32, app.averaging_frames)
+	for i in 0 ..< app.averaging_frames {
+		app.frame_history[i] = make([]f32, fft_n)
+	}
+	app.history_write_index = 0
+	app.averaged_spectrum = make([]f32, fft_n)
+
+	// Initialize waterfall averaging
+	app.waterfall_averaging_enabled = false
+	app.waterfall_averaging_frames = 5 // Default to 5 frames for waterfall
+	app.waterfall_frame_history = make([][]f32, app.waterfall_averaging_frames)
+	for i in 0 ..< app.waterfall_averaging_frames {
+		app.waterfall_frame_history[i] = make([]f32, fft_n)
+	}
+	app.waterfall_history_write_index = 0
+	app.averaged_waterfall_spectrum = make([]f32, fft_n)
+
 	// Make Hann window with proper normalization for FFT
 	for i in 0 ..< fft_n {
 		app.hann_window[i] = 0.5 - 0.5 * math.cos(2.0 * math.PI * f32(i) / f32(fft_n - 1))
@@ -373,6 +407,24 @@ cleanup_app_resources :: proc(app: ^App) {
 	if app.db_tmp != nil do delete(app.db_tmp)
 	if app.waterfall_line != nil do delete(app.waterfall_line)
 	if app.windowed != nil do delete(app.windowed)
+
+	// Cleanup plot averaging buffers
+	if app.frame_history != nil {
+		for frame in app.frame_history {
+			if frame != nil do delete(frame)
+		}
+		delete(app.frame_history)
+	}
+	if app.averaged_spectrum != nil do delete(app.averaged_spectrum)
+
+	// Cleanup waterfall averaging buffers
+	if app.waterfall_frame_history != nil {
+		for frame in app.waterfall_frame_history {
+			if frame != nil do delete(frame)
+		}
+		delete(app.waterfall_frame_history)
+	}
+	if app.averaged_waterfall_spectrum != nil do delete(app.averaged_waterfall_spectrum)
 
 	// Free KissFFT configuration
 	// if app.fft_cfg != nil {
@@ -737,7 +789,14 @@ void main(){
 					// Convert to dB
 					raw_db := 10.0 * math.log10_f32(math.max(power, eps))
 
-					// Apply smoothing
+					// Store raw values in plot averaging history if enabled (always store raw data)
+					if app.plot_averaging_enabled {
+						// Store this frame in history for frame-based averaging
+						app.frame_history[app.history_write_index][j] = raw_db
+					}
+
+					// Always update power_spectrum with either raw or EMA-smoothed values
+					// This ensures waterfall has access to current data regardless of plot averaging
 					if !app.spectrum_initialized || alpha <= 0.0 {
 						app.power_spectrum[j] = raw_db
 					} else {
@@ -745,6 +804,55 @@ void main(){
 						// Use smoothed value for display to reduce noise
 						app.power_spectrum[j] = prev * (1.0 - alpha) + raw_db * alpha
 					}
+				}
+
+				// Handle waterfall averaging FIRST (using raw spectrum data)
+				waterfall_data: []f32
+				if app.waterfall_averaging_enabled {
+					// Store current raw spectrum in waterfall history
+					for j in 0 ..< app.fft_n {
+						app.waterfall_frame_history[app.waterfall_history_write_index][j] = app.power_spectrum[j]
+					}
+					
+					// Advance write index in circular buffer
+					app.waterfall_history_write_index = (app.waterfall_history_write_index + 1) % app.waterfall_averaging_frames
+					
+					// Calculate averaged spectrum for waterfall
+					for j in 0 ..< app.fft_n {
+						sum: f32 = 0.0
+						for frame_idx in 0 ..< app.waterfall_averaging_frames {
+							sum += app.waterfall_frame_history[frame_idx][j]
+						}
+						app.averaged_waterfall_spectrum[j] = sum / f32(app.waterfall_averaging_frames)
+					}
+					
+					// Use averaged data for waterfall
+					waterfall_data = app.averaged_waterfall_spectrum
+				} else {
+					// Use current raw spectrum data for waterfall
+					waterfall_data = app.power_spectrum
+				}
+
+				// Handle plot averaging AFTER waterfall (modifies power_spectrum for plot display only)
+				if app.plot_averaging_enabled {
+					// Advance write index in circular buffer
+					app.history_write_index = (app.history_write_index + 1) % app.averaging_frames
+					
+					// Calculate averaged spectrum for plot display
+					for j in 0 ..< app.fft_n {
+						sum: f32 = 0.0
+						for frame_idx in 0 ..< app.averaging_frames {
+							sum += app.frame_history[frame_idx][j]
+						}
+						app.averaged_spectrum[j] = sum / f32(app.averaging_frames)
+					}
+					
+					// Copy averaged values to power_spectrum for plot display
+					copy(app.power_spectrum, app.averaged_spectrum)
+				}
+
+				// Copy to db_array for statistics (uses power_spectrum which may be plot-averaged)
+				for j in 0 ..< app.fft_n {
 					app.db_array[j] = app.power_spectrum[j]
 				}
 				app.spectrum_initialized = true
@@ -828,7 +936,7 @@ void main(){
 						bin = app.fft_n - 1
 					}
 
-					db_val := app.db_array[bin]
+					db_val := waterfall_data[bin]
 
 					// Normalize to [0, 1]
 					v := (db_val - lo) * inv
@@ -1039,6 +1147,79 @@ void main(){
 		if math.abs(prev_alpha - app.smoothing_alpha) > 0.001 {
 			// Reset initialization if user increases smoothing significantly
 			app.spectrum_initialized = false
+		}
+
+		// Plot averaging controls
+		ui_y = next_row(ui_y) // add some space
+		averaging_box := Rectangle{ui_x, ui_y, 20, 20}
+		prev_averaging_enabled := app.plot_averaging_enabled
+		GuiCheckBox(averaging_box, "Plot Averaging", &app.plot_averaging_enabled)
+		
+		// Show averaging frames slider only when averaging is enabled
+		if app.plot_averaging_enabled {
+			ui_y = next_row(ui_y)
+			frames_rect := Rectangle{slider_x, ui_y, 200, 20}
+			prev_frames := app.averaging_frames
+			frames_float := f32(app.averaging_frames)
+			GuiSliderBar(frames_rect, "Plot Frames", nil, &frames_float, 2.0, 50.0)
+			app.averaging_frames = int(frames_float + 0.5)
+			
+			// Reallocate frame history if number of frames changed
+			if app.averaging_frames != prev_frames {
+				// Clean up old buffers
+				if app.frame_history != nil {
+					for frame in app.frame_history {
+						if frame != nil do delete(frame)
+					}
+					delete(app.frame_history)
+				}
+				
+				// Allocate new buffers
+				app.frame_history = make([][]f32, app.averaging_frames)
+				for i in 0 ..< app.averaging_frames {
+					app.frame_history[i] = make([]f32, app.fft_n)
+				}
+				app.history_write_index = 0
+			}
+		}
+		
+		// If averaging was just disabled, make sure EMA smoothing can work
+		if prev_averaging_enabled && !app.plot_averaging_enabled {
+			app.spectrum_initialized = false
+		}
+
+		// Waterfall averaging controls (separate from plot averaging)
+		ui_y = next_row(ui_y) // add some space
+		waterfall_averaging_box := Rectangle{ui_x, ui_y, 20, 20}
+		prev_waterfall_averaging_enabled := app.waterfall_averaging_enabled
+		GuiCheckBox(waterfall_averaging_box, "Waterfall Averaging", &app.waterfall_averaging_enabled)
+		
+		// Show waterfall averaging frames slider only when averaging is enabled
+		if app.waterfall_averaging_enabled {
+			ui_y = next_row(ui_y)
+			waterfall_frames_rect := Rectangle{slider_x, ui_y, 200, 20}
+			prev_waterfall_frames := app.waterfall_averaging_frames
+			waterfall_frames_float := f32(app.waterfall_averaging_frames)
+			GuiSliderBar(waterfall_frames_rect, "Waterfall Frames", nil, &waterfall_frames_float, 2.0, 20.0)
+			app.waterfall_averaging_frames = int(waterfall_frames_float + 0.5)
+			
+			// Reallocate waterfall frame history if number of frames changed
+			if app.waterfall_averaging_frames != prev_waterfall_frames {
+				// Clean up old buffers
+				if app.waterfall_frame_history != nil {
+					for frame in app.waterfall_frame_history {
+						if frame != nil do delete(frame)
+					}
+					delete(app.waterfall_frame_history)
+				}
+				
+				// Allocate new buffers
+				app.waterfall_frame_history = make([][]f32, app.waterfall_averaging_frames)
+				for i in 0 ..< app.waterfall_averaging_frames {
+					app.waterfall_frame_history[i] = make([]f32, app.fft_n)
+				}
+				app.waterfall_history_write_index = 0
+			}
 		}
 
 		// FFT overlap control
