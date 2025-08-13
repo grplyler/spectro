@@ -37,6 +37,7 @@ odin build spectro -o:speed -out:build/spectro
 - [x] **RTL-SDR Integration**: Continuous sample acquisition from RTL-SDR device
 - [x] **GPU Accelerated**: Efficient scrolling effect using fragment shader and ring buffers
 - [x] **Click to Tune**: Click on the waterfall to retune the SDR to the clicked frequency 
+- [x] *Peak Visualization*: With variable hold time
 - [x] **FFT Processing**: In-house real-time FFT computation (probably chatgpt fueled garbage I don't really understand, but hey, its still 6x faster than KissFFT)
 - [x] ***Sick* Frequency Control**: Frequency control with digits (also inspired by GQRX)
 - [x] **Pretty Waterfall**: Scrolling spectrogram display using Raylib
