@@ -23,7 +23,7 @@ import "utils"
 // Configuration constants
 INIT_FFT_SIZE :: 2048
 // MAX_FFT_SIZE :: 8192
-HISTORY_ROWS :: 512
+HISTORY_ROWS :: 1024
 BLOCK_SIZE :: 16384 // Number of samples per read
 SAMPLE_RATE :: 2048000 // 2.048 MHz
 CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
@@ -45,106 +45,175 @@ RingBuffer :: struct {
 	mutex:      sync.Mutex,
 }
 
+FrequencyControlState :: struct {
+	thou_left:  u8,
+	hund_left:  u8,
+	tens_left:  u8,
+	ones_left:  u8,
+	ones_right: u8,
+	tens_right: u8,
+	hund_right: u8,
+	pending_retune: bool, // Flag to indicate if retune is pending
+}
+
+// freq_control_to_hz :: proc(fcs: ^FrequencyControlState) -> u32 {
+// 	// Convert frequency control state to Hz
+// 	left_part := strings.concatenate({fcs.thou_left, fcs.hund_left, fcs.tens_left, fcs.ones_left})
+// 	right_part := strings.concatenate({fcs.tens_right, fcs.hund_right, fcs.thou_right})
+
+// 	left_freq, left_ok := strconv.parse_int(left_part, 10)
+// 	right_freq, right_ok := strconv.parse_int(right_part, 10)
+
+// 	if !left_ok || !right_ok || left_freq < 0 || right_freq < 0 {
+// 		return 0 // Invalid frequency
+// 	}
+
+// 	return u32(left_freq * 1000 + right_freq)
+// }
+
 // Application state
 App :: struct {
-	dev:                  ^rtlsdr.rtlsdr_dev,
-	ring_buffer:          RingBuffer,
-	center_freq:          u32,
+	dev:                           ^rtlsdr.rtlsdr_dev,
+	ring_buffer:                   RingBuffer,
+	center_freq:                   u32,
 
 	// Dynamic FFT state
-	fft_n:                int,
-	fft_plan:             fft.FFTPlan,
+	fft_n:                         int,
+	fft_plan:                      fft.FFTPlan,
 	// fft_cfg:              kissfft.kiss_fft_cfg,
-	hann_window:          []f32,
+	hann_window:                   []f32,
 
 	// Processing buffers  
-	iq_samples:           []fft.Complex32,
-	fft_output:           []fft.Complex32,
-	windowed:             []fft.Complex32,
-	power_spectrum:       []f32,
-	db_array:             []f32,
-	db_tmp:               []f32, // for quickselect
-	waterfall_line:       []rl.Color,
+	iq_samples:                    []fft.Complex32,
+	fft_output:                    []fft.Complex32,
+	windowed:                      []fft.Complex32,
+	power_spectrum:                []f32,
+	db_array:                      []f32,
+	db_tmp:                        []f32, // for quickselect
+	waterfall_line:                []rl.Color,
 
 	// Texture resources
-	ring_texture:         rl.Texture2D,
-	lut_texture:          rl.Texture2D,
+	ring_texture:                  rl.Texture2D,
+	lut_texture:                   rl.Texture2D,
 
 	// GUI state
-	write_head:           int,
-	frame_fill:           int,
-	frame_counter:        int,
+	write_head:                    int,
+	frame_fill:                    int,
+	frame_counter:                 int,
 
 	// Frequency tuning
-	freq_input:           [32]u8,
-	freq_edit:            bool,
-	pending_retune:       bool,
-	cursor_set_retune:    bool,
+	freq_input:                    [32]u8,
+	freq_edit:                     bool,
+	pending_retune:                bool,
+	cursor_set_retune:             bool,
 
 	// Frame skipping for waterfall speed
-	frame_skip:           int,
-	skip_counter:         int,
+	frame_skip:                    int,
+	skip_counter:                  int,
 
 	// FFT size selection
-	fft_size_index:       int,
-	fft_dropdown_edit:    bool,
+	fft_size_index:                int,
+	fft_dropdown_edit:             bool,
 
 	// Performance timing
-	fft_time_acc:         f64,
-	tex_time_acc:         f64,
-	fft_batches:          int,
-	tex_batches:          int,
-	stats_time_last:      f64,
+	fft_time_acc:                  f64,
+	tex_time_acc:                  f64,
+	fft_batches:                   int,
+	tex_batches:                   int,
+	stats_time_last:               f64,
 
 	// Spectrum smoothing
-	smoothing_alpha:      f32,
-	spectrum_initialized: bool,
+	smoothing_alpha:               f32,
+	spectrum_initialized:          bool,
 
 	// Plot averaging
-	plot_averaging_enabled: bool,
-	averaging_frames:       int,
-	frame_history:          [][]f32, // circular buffer of power spectra
-	history_write_index:    int,
-	averaged_spectrum:      []f32,
+	plot_averaging_enabled:        bool,
+	averaging_frames:              int,
+	frame_history:                 [][]f32, // circular buffer of power spectra
+	history_write_index:           int,
+	averaged_spectrum:             []f32,
 
 	// Waterfall averaging (separate from plot averaging)
-	waterfall_averaging_enabled: bool,
-	waterfall_averaging_frames:  int,
-	waterfall_frame_history:     [][]f32, // circular buffer for waterfall data
+	waterfall_averaging_enabled:   bool,
+	waterfall_averaging_frames:    int,
+	waterfall_frame_history:       [][]f32, // circular buffer for waterfall data
 	waterfall_history_write_index: int,
-	averaged_waterfall_spectrum: []f32,
+	averaged_waterfall_spectrum:   []f32,
 
 	// FFT overlap control
-	overlap_enabled:      bool,
-	prev_overlap_enabled: bool,
+	overlap_enabled:               bool,
+	prev_overlap_enabled:          bool,
 
 	// IQ correction parameters
-	dc_i_avg:             f32, // Running average of DC offset for I
-	dc_q_avg:             f32, // Running average of DC offset for Q
-	dc_alpha:             f32, // EMA factor for DC tracking (0.995 = slow adaptation)
+	dc_i_avg:                      f32, // Running average of DC offset for I
+	dc_q_avg:                      f32, // Running average of DC offset for Q
+	dc_alpha:                      f32, // EMA factor for DC tracking (0.995 = slow adaptation)
 
 	// Thread management
-	recv_thread:          ^thread.Thread,
-	should_stop_recv:     bool,
+	recv_thread:                   ^thread.Thread,
+	should_stop_recv:              bool,
 
 	// Gui
-	sidebar_width:        i32, // Width of the sidebar for controls
-	waterfall_top_offset:    f32, // Height of the waterfall display
+	sidebar_width:                 i32, // Width of the sidebar for controls
+	waterfall_top_offset:          f32, // Height of the waterfall display
 	max_db_waterfall:              f32, // dB high limit for spectrum display
 	min_db_waterfall:              f32, // dB low limit for spectrum display
-	min_db_spectrum:     f32, // Min dB for spectrum plot
-	max_db_spectrum:     f32, // Max dB for spectrum plot
-	
+	min_db_spectrum:               f32, // Min dB for spectrum plot
+	max_db_spectrum:               f32, // Max dB for spectrum plot
+
 	// Peak detection and hold
-	peaks_enabled:        bool,  // Enable peak detection and display
-	peak_hold_time:       f32,   // Peak hold time in seconds
-	peak_spectrum:        []f32, // Peak values for each frequency bin
-	peak_timestamps:      []f64, // Timestamp when each peak was last updated
-	
+	peaks_enabled:                 bool, // Enable peak detection and display
+	peak_hold_time:                f32, // Peak hold time in seconds
+	peak_spectrum:                 []f32, // Peak values for each frequency bin
+	peak_timestamps:               []f64, // Timestamp when each peak was last updated
+	fcs:                           FrequencyControlState, // Frequency control state for input
 }
 
 app: App
 
+fcs_init :: proc() -> FrequencyControlState {
+	return FrequencyControlState {
+		thou_left = 0,
+		hund_left = 1,
+		tens_left = 0,
+		ones_left = 1,
+		ones_right = 1,
+		tens_right = 0,
+		hund_right = 0,
+	}
+}
+
+fcs_get_frequency_hz :: proc(fcs: ^FrequencyControlState) -> u32 {
+	// Convert MHz to Hz
+	// Left side: thousands, hundreds, tens, ones of MHz
+	whole_mhz := u32(fcs.thou_left) * 1000 + u32(fcs.hund_left) * 100 + u32(fcs.tens_left) * 10 + u32(fcs.ones_left)
+	// Right side: tenths, hundredths, thousandths of MHz  
+	frac_mhz := u32(fcs.ones_right) * 100 + u32(fcs.tens_right) * 10 + u32(fcs.hund_right)
+	
+	// Convert to Hz: whole MHz * 1M + fractional MHz * 1000
+	final_hz := whole_mhz * 1_000_000 + frac_mhz * 1000
+	return final_hz
+}
+
+fcs_from_hz :: proc(fcs: ^FrequencyControlState, hz: u32) {
+	// Convert Hz to MHz with proper rounding
+	mhz_scaled := f64(hz) / 1000.0 // Convert to kHz first
+	mhz_rounded := math.round(mhz_scaled) // Round to nearest kHz
+	
+	// Split into whole MHz and fractional kHz parts
+	whole_mhz := u32(mhz_rounded / 1000.0)
+	frac_khz := u32(mhz_rounded) % 1000
+
+	// Set frequency control state
+	fcs.thou_left = u8(whole_mhz / 1000)
+	fcs.hund_left = u8((whole_mhz / 100) % 10)
+	fcs.tens_left = u8((whole_mhz / 10) % 10)
+	fcs.ones_left = u8(whole_mhz % 10)
+
+	fcs.ones_right = u8(frac_khz / 100)
+	fcs.tens_right = u8((frac_khz / 10) % 10)
+	fcs.hund_right = u8(frac_khz % 10)
+}
 
 // Initialize ring buffer
 ring_buffer_init :: proc(rb: ^RingBuffer, size: int) {
@@ -267,6 +336,7 @@ ring_buffer_clear :: proc(rb: ^RingBuffer) {
 retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 	using rtlsdr
 	if dev == nil do return -1
+	delay_ms := 5 * time.Millisecond
 
 	fmt.printf("Starting retune from %.3f MHz to %.3f MHz\n", f64(cur^) / 1e6, f64(new_cf) / 1e6)
 
@@ -283,7 +353,7 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 	}
 
 	// Small delay to ensure everything is settled
-	// time.sleep(20 * time.Millisecond)
+	time.sleep(delay_ms)
 
 	// Now safely retune
 	r := rtlsdr_set_center_freq(dev, new_cf)
@@ -299,7 +369,7 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 		app.frame_counter = 0 // Reset frame counter too
 
 		// Additional delay before restarting
-		// time.sleep(20 * time.Millisecond)
+		time.sleep(delay_ms)
 
 		// Restart the async read thread
 		fmt.println("Restarting async read...")
@@ -310,7 +380,7 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 		)
 
 		// Give the new thread time to start
-		// time.sleep(20 * time.Millisecond)
+		time.sleep(delay_ms)
 
 		fmt.printf("Retune completed successfully\n")
 	} else {
@@ -323,6 +393,12 @@ retune_device :: proc(dev: ^rtlsdr.rtlsdr_dev, cur: ^u32, new_cf: u32) -> i32 {
 			fn = recv_worker,
 		)
 	}
+
+	// Update frequency control state
+	fcs_from_hz(&app.fcs, new_cf)
+
+	app.fcs.pending_retune = false // Reset pending retune flag
+
 	return r
 }
 
@@ -335,6 +411,9 @@ init_app_resources :: proc(app: ^App, fft_n: int) {
 	// Create FFT plan
 	// app.fft_cfg = kissfft.kiss_fft_alloc(i32(fft_n), 0, nil, nil)
 	app.fft_plan = fft.fft_make_plan(fft_n, SAMPLE_RATE)
+
+	// Frequency control state
+	app.fcs = fcs_init()
 
 	// Allocate buffers
 	app.hann_window = make([]f32, fft_n)
@@ -372,7 +451,7 @@ init_app_resources :: proc(app: ^App, fft_n: int) {
 	app.peak_hold_time = 2.0 // Default 2 seconds
 	app.peak_spectrum = make([]f32, fft_n)
 	app.peak_timestamps = make([]f64, fft_n)
-	
+
 	// Initialize peak arrays with very low values
 	for i in 0 ..< fft_n {
 		app.peak_spectrum[i] = -200.0 // Very low dB value
@@ -577,26 +656,10 @@ void main(){
 	prev_fft_size_index := app.fft_size_index
 
 	for !WindowShouldClose() {
-		// Handle FFT size changes
-		// if app.fft_size_index != prev_fft_size_index {
-		// 	new_fft_size := FFT_SIZES[app.fft_size_index]
-		// 	fmt.printf("Changing FFT size from %d to %d\n", app.fft_n, new_fft_size)
-
-		// 	// Clean up old resources
-		// 	if app.fft_cfg != nil {
-		// 		kissfft.kiss_fft_free(app.fft_cfg)
-		// 	}
-		// 	cleanup_app_resources(&app)
-
-		// 	// Initialize with new FFT size
-		// 	init_app_resources(&app, new_fft_size)
-
-		// 	// Reset processing state
-		// 	app.frame_fill = 0
-		// 	app.spectrum_initialized = false
-
-		// 	prev_fft_size_index = app.fft_size_index
-		// }
+		// Handle Retune on Enter
+		if IsKeyPressed(KeyboardKey.ENTER) && app.fcs.pending_retune && GetMouseY() < 60 {
+			retune_device(app.dev, &app.center_freq, fcs_get_frequency_hz(&app.fcs))
+		}
 
 		// Handle overlap mode changes - reset buffer to avoid artifacts
 		if app.overlap_enabled != app.prev_overlap_enabled {
@@ -780,11 +843,7 @@ void main(){
 				// )
 
 
-				fft.fft_execute(
-					&app.fft_plan,
-					app.windowed,
-					app.fft_output,
-				)
+				fft.fft_execute(&app.fft_plan, app.windowed, app.fft_output)
 
 				// Calculate power spectrum with proper normalization
 				eps: f32 = 1e-20
@@ -834,21 +893,24 @@ void main(){
 				if app.waterfall_averaging_enabled {
 					// Store current raw spectrum in waterfall history
 					for j in 0 ..< app.fft_n {
-						app.waterfall_frame_history[app.waterfall_history_write_index][j] = app.power_spectrum[j]
+						app.waterfall_frame_history[app.waterfall_history_write_index][j] =
+							app.power_spectrum[j]
 					}
-					
+
 					// Advance write index in circular buffer
-					app.waterfall_history_write_index = (app.waterfall_history_write_index + 1) % app.waterfall_averaging_frames
-					
+					app.waterfall_history_write_index =
+						(app.waterfall_history_write_index + 1) % app.waterfall_averaging_frames
+
 					// Calculate averaged spectrum for waterfall
 					for j in 0 ..< app.fft_n {
 						sum: f32 = 0.0
 						for frame_idx in 0 ..< app.waterfall_averaging_frames {
 							sum += app.waterfall_frame_history[frame_idx][j]
 						}
-						app.averaged_waterfall_spectrum[j] = sum / f32(app.waterfall_averaging_frames)
+						app.averaged_waterfall_spectrum[j] =
+							sum / f32(app.waterfall_averaging_frames)
 					}
-					
+
 					// Use averaged data for waterfall
 					waterfall_data = app.averaged_waterfall_spectrum
 				} else {
@@ -860,7 +922,7 @@ void main(){
 				if app.plot_averaging_enabled {
 					// Advance write index in circular buffer
 					app.history_write_index = (app.history_write_index + 1) % app.averaging_frames
-					
+
 					// Calculate averaged spectrum for plot display
 					for j in 0 ..< app.fft_n {
 						sum: f32 = 0.0
@@ -869,7 +931,7 @@ void main(){
 						}
 						app.averaged_spectrum[j] = sum / f32(app.averaging_frames)
 					}
-					
+
 					// Copy averaged values to power_spectrum for plot display
 					copy(app.power_spectrum, app.averaged_spectrum)
 				}
@@ -884,10 +946,11 @@ void main(){
 					current_time := GetTime()
 					for j in 0 ..< app.fft_n {
 						current_db := app.power_spectrum[j]
-						
+
 						// Check if current value is higher than stored peak or if peak has expired
 						time_since_peak := current_time - app.peak_timestamps[j]
-						if current_db > app.peak_spectrum[j] || time_since_peak > f64(app.peak_hold_time) {
+						if current_db > app.peak_spectrum[j] ||
+						   time_since_peak > f64(app.peak_hold_time) {
 							app.peak_spectrum[j] = current_db
 							app.peak_timestamps[j] = current_time
 						}
@@ -1062,7 +1125,12 @@ void main(){
 		DrawTexturePro(
 			app.ring_texture,
 			Rectangle{0, 0, f32(app.ring_texture.width), f32(app.ring_texture.height)},
-			Rectangle{0, app.waterfall_top_offset, f32(GetScreenWidth() - app.sidebar_width), f32(GetScreenHeight() - i32(app.waterfall_top_offset))},
+			Rectangle {
+				0,
+				app.waterfall_top_offset,
+				f32(GetScreenWidth() - app.sidebar_width),
+				f32(GetScreenHeight() - i32(app.waterfall_top_offset)),
+			},
 			Vector2{0, 0},
 			0.0,
 			WHITE,
@@ -1074,16 +1142,18 @@ void main(){
 		draw_spectrum_plot()
 		draw_cursor_freq()
 
-		// Display current freq in orange in the top center
-		freq_text := fmt.ctprintf("%.3f MHz", f64(app.center_freq) / 1e6)
-		text_width := MeasureText(freq_text, 40)
-		DrawText(
-			cstring(freq_text),
-			i32((GetScreenWidth() - app.sidebar_width) / 2) - text_width / 2,
-			20,
-			40,
-			rl.Color{245, 191, 100, 255},
-		)
+		// // Display current freq in orange in the top center
+		// freq_text := fmt.ctprintf("%.3f MHz", f64(app.center_freq) / 1e6)
+		// text_width := MeasureText(freq_text, 40)
+		// DrawText(
+		// 	cstring(freq_text),
+		// 	i32((GetScreenWidth() - app.sidebar_width) / 2) - text_width / 2,
+		// 	20,
+		// 	40,
+		// 	rl.Color{245, 191, 100, 255},
+		// )
+
+		draw_freq_control(&app.fcs)
 
 		// Draw a red line in the middle to indicate DC
 		dc_line_x := f32((GetScreenWidth() - app.sidebar_width) / 2)
@@ -1095,39 +1165,8 @@ void main(){
 			rl.Color{245, 191, 100, 255},
 		)
 
-
-		// Frequency input box
-		freq_box := Rectangle{ui_x, ui_y, 120, 24}
-		toggled := GuiTextBox(
-			freq_box,
-			cstring(raw_data(app.freq_input[:])),
-			len(app.freq_input),
-			app.freq_edit,
-		)
-
-		if toggled {
-			app.freq_edit = !app.freq_edit
-			if !app.freq_edit {
-				// When exiting edit mode, just set the pending flag
-				app.pending_retune = true
-			}
-		}
-
-		ui_y = next_row(ui_y)
-		tune_btn := Rectangle{ui_x, ui_y, 60, 24}
-		if GuiButton(tune_btn, "Tune") {
-			fmt.println("Tune button pressed")
-			app.pending_retune = true
-		}
-
-		if app.freq_edit &&
-		   (IsKeyPressed(KeyboardKey.ENTER) || IsKeyPressed(KeyboardKey.KP_ENTER)) {
-			app.freq_edit = false
-			app.pending_retune = true
-		}
-
 		// Auto levels checkbox
-		ui_y = next_row(ui_y)
+		// ui_y = next_row(ui_y)
 		auto_box := Rectangle{ui_x, ui_y, 20, 20}
 		GuiCheckBox(auto_box, "Auto Level Waterfall", &auto_levels)
 
@@ -1145,11 +1184,25 @@ void main(){
 
 			ui_y = next_row(ui_y)
 			black_rect = Rectangle{slider_x, ui_y, slider_width, 20}
-			GuiSliderBar(black_rect, "Min dB Waterfall", nil, &min_db_waterfall, slider_min, slider_max)
+			GuiSliderBar(
+				black_rect,
+				"Min dB Waterfall",
+				nil,
+				&min_db_waterfall,
+				slider_min,
+				slider_max,
+			)
 
 			ui_y = next_row(ui_y)
 			white_rect = Rectangle{slider_x, ui_y, slider_width, 20}
-			GuiSliderBar(white_rect, "Max dB Waterfall", nil, &max_db_waterfall, slider_min, slider_max)
+			GuiSliderBar(
+				white_rect,
+				"Max dB Waterfall",
+				nil,
+				&max_db_waterfall,
+				slider_min,
+				slider_max,
+			)
 
 
 			if max_db_waterfall <= min_db_waterfall + 0.5 {
@@ -1191,7 +1244,7 @@ void main(){
 		averaging_box := Rectangle{ui_x, ui_y, 20, 20}
 		prev_averaging_enabled := app.plot_averaging_enabled
 		GuiCheckBox(averaging_box, "Plot Averaging", &app.plot_averaging_enabled)
-		
+
 		// Show averaging frames slider only when averaging is enabled
 		if app.plot_averaging_enabled {
 			ui_y = next_row(ui_y)
@@ -1200,7 +1253,7 @@ void main(){
 			frames_float := f32(app.averaging_frames)
 			GuiSliderBar(frames_rect, "Plot Frames", nil, &frames_float, 2.0, 50.0)
 			app.averaging_frames = int(frames_float + 0.5)
-			
+
 			// Reallocate frame history if number of frames changed
 			if app.averaging_frames != prev_frames {
 				// Clean up old buffers
@@ -1210,7 +1263,7 @@ void main(){
 					}
 					delete(app.frame_history)
 				}
-				
+
 				// Allocate new buffers
 				app.frame_history = make([][]f32, app.averaging_frames)
 				for i in 0 ..< app.averaging_frames {
@@ -1219,7 +1272,7 @@ void main(){
 				app.history_write_index = 0
 			}
 		}
-		
+
 		// If averaging was just disabled, make sure EMA smoothing can work
 		if prev_averaging_enabled && !app.plot_averaging_enabled {
 			app.spectrum_initialized = false
@@ -1229,17 +1282,28 @@ void main(){
 		ui_y = next_row(ui_y) // add some space
 		waterfall_averaging_box := Rectangle{ui_x, ui_y, 20, 20}
 		prev_waterfall_averaging_enabled := app.waterfall_averaging_enabled
-		GuiCheckBox(waterfall_averaging_box, "Waterfall Averaging", &app.waterfall_averaging_enabled)
-		
+		GuiCheckBox(
+			waterfall_averaging_box,
+			"Waterfall Averaging",
+			&app.waterfall_averaging_enabled,
+		)
+
 		// Show waterfall averaging frames slider only when averaging is enabled
 		if app.waterfall_averaging_enabled {
 			ui_y = next_row(ui_y)
 			waterfall_frames_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 			prev_waterfall_frames := app.waterfall_averaging_frames
 			waterfall_frames_float := f32(app.waterfall_averaging_frames)
-			GuiSliderBar(waterfall_frames_rect, "Waterfall Frames", nil, &waterfall_frames_float, 2.0, 20.0)
+			GuiSliderBar(
+				waterfall_frames_rect,
+				"Waterfall Frames",
+				nil,
+				&waterfall_frames_float,
+				2.0,
+				20.0,
+			)
 			app.waterfall_averaging_frames = int(waterfall_frames_float + 0.5)
-			
+
 			// Reallocate waterfall frame history if number of frames changed
 			if app.waterfall_averaging_frames != prev_waterfall_frames {
 				// Clean up old buffers
@@ -1249,7 +1313,7 @@ void main(){
 					}
 					delete(app.waterfall_frame_history)
 				}
-				
+
 				// Allocate new buffers
 				app.waterfall_frame_history = make([][]f32, app.waterfall_averaging_frames)
 				for i in 0 ..< app.waterfall_averaging_frames {
@@ -1264,14 +1328,14 @@ void main(){
 		peaks_box := Rectangle{ui_x, ui_y, 20, 20}
 		prev_peaks_enabled := app.peaks_enabled
 		GuiCheckBox(peaks_box, "Show Peaks", &app.peaks_enabled)
-		
+
 		// Show peak hold time slider only when peaks are enabled
 		if app.peaks_enabled {
 			ui_y = next_row(ui_y)
 			peak_hold_rect := Rectangle{slider_x, ui_y, slider_width, 20}
 			GuiSliderBar(peak_hold_rect, "Peak Hold (s)", nil, &app.peak_hold_time, 0.5, 10.0)
 		}
-		
+
 		// If peaks were just enabled, reset all peak data
 		if !prev_peaks_enabled && app.peaks_enabled {
 			current_time := GetTime()
@@ -1361,8 +1425,8 @@ draw_cursor_freq :: proc() {
 	waterfall_width := GetScreenWidth() - app.sidebar_width
 	if mouse_x < waterfall_width {
 		// Draw vertical line at mouse X position
-		DrawRectangle(i32(mouse_x) - 10, 0, 20, GetScreenHeight(), rl.Color{245, 191, 100, 100})
-		DrawLine(i32(mouse_x), 0, i32(mouse_x), GetScreenHeight(), rl.Color{245, 191, 100, 255})
+		DrawRectangle(i32(mouse_x) - 10, 60, 20, GetScreenHeight(), rl.Color{245, 191, 100, 100})
+		DrawLine(i32(mouse_x), 60, i32(mouse_x), GetScreenHeight(), rl.Color{245, 191, 100, 255})
 		// Calculate frequency at this X position
 		// The waterfall spans from -sample_rate/2 to +sample_rate/2 around center_freq
 		// with DC in the center
@@ -1387,7 +1451,7 @@ draw_cursor_freq :: proc() {
 			rl.Color{245, 191, 100, 255},
 		)
 
-		if IsMouseButtonPressed(rl.MouseButton.LEFT) {
+		if IsMouseButtonPressed(rl.MouseButton.LEFT) && GetMouseY() > 60 {
 			// Set new center frequency based on mouse click
 			new_freq := u32(math.round(freq_hz))
 			fmt.printf("Setting new center frequency: %.3f MHz\n", freq_mhz)
@@ -1399,71 +1463,71 @@ draw_cursor_freq :: proc() {
 }
 
 // Configuration constants for frequency bar display
-FREQ_BAR_MAJOR_TICK_SPACING_MHZ :: 1.0  // Major tick spacing in MHz
-FREQ_BAR_MINOR_TICK_SPACING_MHZ :: 0.1  // Minor tick spacing in MHz
-FREQ_BAR_SHOW_MINOR_LABELS :: true     // Whether to show text labels on minor ticks
+FREQ_BAR_MAJOR_TICK_SPACING_MHZ :: 1.0 // Major tick spacing in MHz
+FREQ_BAR_MINOR_TICK_SPACING_MHZ :: 0.1 // Minor tick spacing in MHz
+FREQ_BAR_SHOW_MINOR_LABELS :: true // Whether to show text labels on minor ticks
 
 draw_freq_bar :: proc() {
 	using rl
-	
+
 	// Calculate frequency range and scale
 	waterfall_width := GetScreenWidth() - app.sidebar_width
-	
+
 	// Check if we need to redraw (frequency or window size changed)
 
-	
+
 	half_sample_rate := f64(SAMPLE_RATE) / 2.0
 	center_freq_mhz := f64(app.center_freq) / 1e6
 	start_freq_mhz := center_freq_mhz - half_sample_rate / 1e6
 	end_freq_mhz := center_freq_mhz + half_sample_rate / 1e6
-	
+
 	// Frequency bar parameters
 	bar_height: i32 = 50
-	bar_y: i32 = i32(app.waterfall_top_offset)  // Above the FPS display
+	bar_y: i32 = i32(app.waterfall_top_offset) // Above the FPS display
 	text_height: i32 = 40
 	minor_text_height: i32 = 20
 	tick_height: i32 = 8
-	
+
 	// Draw background bar
 	DrawRectangle(0, bar_y, waterfall_width, bar_height, rl.Color{40, 40, 40, 200})
-	
+
 	// Use configured major tick spacing
 	nice_step := f64(FREQ_BAR_MAJOR_TICK_SPACING_MHZ)
-	
+
 	// Pre-calculate constants for performance
 	freq_span_mhz := end_freq_mhz - start_freq_mhz
 	inv_freq_span := 1.0 / freq_span_mhz
 	first_tick := math.floor(start_freq_mhz / nice_step) * nice_step
-	
+
 	// Draw major ticks and labels
 	freq := first_tick
 	tick_count := 0
-	max_ticks := 20  // Safety limit to prevent excessive drawing
+	max_ticks := 20 // Safety limit to prevent excessive drawing
 	for freq <= end_freq_mhz + nice_step && tick_count < max_ticks {
 		if freq >= start_freq_mhz - nice_step / 2.0 {
 			// Calculate x position (optimized)
 			normalized_pos := (freq - start_freq_mhz) * inv_freq_span
 			x := i32(normalized_pos * f64(waterfall_width))
-			
+
 			if x >= 0 && x <= waterfall_width {
 				// Draw major tick
 				DrawLine(x, bar_y, x, bar_y + tick_height, rl.Color{200, 200, 200, 255})
-				
+
 				// Use a pre-formatted string approach to avoid allocations every frame
 				// Round frequency for cleaner display
 				freq_rounded := utils.round_to_decimals(freq, 1)
-				
+
 				// Simple integer check for cleaner labels
 				if math.abs(freq_rounded - math.round(freq_rounded)) < 0.01 {
 					// Display as integer
 					freq_str := fmt.tprintf("%.0f", freq_rounded)
 					// defer delete(freq_str) // Clean up allocation
-					
+
 					text_width := MeasureText(cstring(raw_data(freq_str)), text_height)
 					label_x := x - text_width / 2
 					if label_x < 0 do label_x = 0
 					if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
-					
+
 					DrawText(
 						cstring(raw_data(freq_str)),
 						label_x,
@@ -1473,17 +1537,23 @@ draw_freq_bar :: proc() {
 					)
 
 					// Draw Mhz Label to the bottom right of the number
-					DrawText("MHz", label_x + text_width + 10, bar_y + bar_height - 20, 20, rl.Color{180, 180, 180, 255})
+					DrawText(
+						"MHz",
+						label_x + text_width + 10,
+						bar_y + bar_height - 20,
+						20,
+						rl.Color{180, 180, 180, 255},
+					)
 				} else {
 					// Display with one decimal place
 					freq_str := fmt.tprintf("%.3f", freq_rounded)
 					// defer delete(freq_str) // Clean up allocation
-					
+
 					text_width := MeasureText(cstring(raw_data(freq_str)), text_height)
 					label_x := x - text_width / 2
 					if label_x < 0 do label_x = 0
 					if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
-					
+
 					DrawText(
 						cstring(raw_data(freq_str)),
 						label_x,
@@ -1493,41 +1563,47 @@ draw_freq_bar :: proc() {
 					)
 
 					// Draw Mhz Label to the bottom right of the number
-					DrawText("MHz", label_x + text_width + 10, bar_y + bar_height - 20, 20, rl.Color{180, 180, 180, 255})
+					DrawText(
+						"MHz",
+						label_x + text_width + 10,
+						bar_y + bar_height - 20,
+						20,
+						rl.Color{180, 180, 180, 255},
+					)
 				}
 				tick_count += 1
 			}
 		}
 		freq += nice_step
 	}
-	
+
 	// Use configured minor tick spacing
 	minor_step := f64(FREQ_BAR_MINOR_TICK_SPACING_MHZ)
 	freq = math.floor(start_freq_mhz / minor_step) * minor_step
 	minor_count := 0
-	max_minor := 50  // Limit minor ticks for performance
+	max_minor := 50 // Limit minor ticks for performance
 	for freq <= end_freq_mhz + minor_step && minor_count < max_minor {
 		if freq >= start_freq_mhz - minor_step / 2.0 {
 			normalized_pos := (freq - start_freq_mhz) * inv_freq_span
 			x := i32(normalized_pos * f64(waterfall_width))
-			
+
 			if x >= 0 && x <= waterfall_width {
 				// Fixed check: only draw if not close to a major tick
 				remainder := math.mod(freq, nice_step)
 				is_major := remainder < 0.01 || remainder > (nice_step - 0.01)
 				if !is_major {
 					DrawLine(x, bar_y, x, bar_y + tick_height / 2, rl.Color{150, 150, 150, 128})
-					
+
 					// Draw minor tick labels if enabled
 					if FREQ_BAR_SHOW_MINOR_LABELS {
 						freq_rounded := utils.round_to_decimals(freq, 1)
 						freq_str := fmt.tprintf("%.1f", freq_rounded)
-						
+
 						text_width := MeasureText(cstring(raw_data(freq_str)), minor_text_height)
 						label_x := x - text_width / 2
 						if label_x < 0 do label_x = 0
 						if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
-						
+
 						DrawText(
 							cstring(raw_data(freq_str)),
 							label_x,
@@ -1536,31 +1612,31 @@ draw_freq_bar :: proc() {
 							rl.Color{150, 150, 150, 180},
 						)
 					}
-					
+
 					minor_count += 1
 				}
 			}
 		}
 		freq += minor_step
 	}
-	
+
 	// Draw center frequency marker
 	center_x := waterfall_width / 2
 	DrawLine(center_x, bar_y - 5, center_x, bar_y + bar_height, rl.Color{255, 255, 0, 255})
-	
+
 }
 
 draw_spectrum_plot :: proc() {
 	using rl
-	
+
 	if !app.spectrum_initialized || len(app.power_spectrum) == 0 {
 		return
 	}
-	
+
 	waterfall_width := GetScreenWidth() - app.sidebar_width
 	plot_height: i32 = 400
 	plot_y: i32 = 0
-	
+
 	// Draw background
 	DrawRectangle(0, plot_y, waterfall_width, plot_height, rl.Color{20, 20, 30, 180})
 
@@ -1570,7 +1646,7 @@ draw_spectrum_plot :: proc() {
 	// Calculate dB range for scaling
 	min_db: f32 = app.min_db_spectrum
 	max_db: f32 = app.max_db_spectrum
-	
+
 	// Auto-scale to data if available
 	// if len(app.db_array) > 0 {
 	// 	data_min := app.db_array[0]
@@ -1584,12 +1660,12 @@ draw_spectrum_plot :: proc() {
 	// 	min_db = data_min - range_padding
 	// 	max_db = data_max + range_padding
 	// }
-	
+
 	db_range := max_db - min_db
 	if db_range < 1.0 do db_range = 1.0
-	
+
 	// Cyber theme highlight color (bright cyan)
-	spectrum_color := COLOR_SPECTRUM  // Cyan
+	spectrum_color := COLOR_SPECTRUM // Cyan
 	peak_color := COLOR_HIGHLIGHT // Yellow for peaks
 	grid_color := rl.Color{100, 100, 120, 100}
 
@@ -1597,12 +1673,12 @@ draw_spectrum_plot :: proc() {
 	// Draw spectrum line with fftshift
 	if len(app.db_array) >= 2 {
 		half_n := app.fft_n / 2
-		
-		for x in 0..<waterfall_width-1 {
+
+		for x in 0 ..< waterfall_width - 1 {
 			// Map x position to frequency bin (with fftshift)
 			bin_f := f32(x) * f32(app.fft_n) / f32(waterfall_width)
 			bin := int(bin_f)
-			
+
 			// Apply fftshift mapping (same as waterfall)
 			actual_bin: int
 			if bin < half_n {
@@ -1610,11 +1686,11 @@ draw_spectrum_plot :: proc() {
 			} else {
 				actual_bin = bin - half_n
 			}
-			
+
 			// Clamp to valid range
 			if actual_bin >= app.fft_n do actual_bin = app.fft_n - 1
 			if actual_bin < 0 do actual_bin = 0
-			
+
 			// Get next bin for line drawing
 			next_bin_f := f32(x + 1) * f32(app.fft_n) / f32(waterfall_width)
 			next_bin := int(next_bin_f)
@@ -1626,21 +1702,21 @@ draw_spectrum_plot :: proc() {
 			}
 			if next_actual_bin >= app.fft_n do next_actual_bin = app.fft_n - 1
 			if next_actual_bin < 0 do next_actual_bin = 0
-			
+
 			// Scale dB values to plot coordinates
 			db1 := app.db_array[actual_bin]
 			db2 := app.db_array[next_actual_bin]
-			
+
 			y1_norm := (max_db - db1) / db_range
 			y2_norm := (max_db - db2) / db_range
-			
+
 			y1 := plot_y + i32(y1_norm * f32(plot_height))
 			y2 := plot_y + i32(y2_norm * f32(plot_height))
-			
+
 			// Clamp to plot area
 			y1 = math.clamp(y1, plot_y, plot_y + plot_height)
 			y2 = math.clamp(y2, plot_y, plot_y + plot_height)
-			
+
 			DrawLine(i32(x), y1, i32(x + 1), y2, spectrum_color)
 		}
 	}
@@ -1648,12 +1724,12 @@ draw_spectrum_plot :: proc() {
 	// Draw peak spectrum if enabled
 	if app.peaks_enabled && len(app.peak_spectrum) >= 2 {
 		half_n := app.fft_n / 2
-		
-		for x in 0..<waterfall_width-1 {
+
+		for x in 0 ..< waterfall_width - 1 {
 			// Map x position to frequency bin (with fftshift)
 			bin_f := f32(x) * f32(app.fft_n) / f32(waterfall_width)
 			bin := int(bin_f)
-			
+
 			// Apply fftshift mapping (same as spectrum)
 			actual_bin: int
 			if bin < half_n {
@@ -1661,11 +1737,11 @@ draw_spectrum_plot :: proc() {
 			} else {
 				actual_bin = bin - half_n
 			}
-			
+
 			// Clamp to valid range
 			if actual_bin >= app.fft_n do actual_bin = app.fft_n - 1
 			if actual_bin < 0 do actual_bin = 0
-			
+
 			// Get next bin for line drawing
 			next_bin_f := f32(x + 1) * f32(app.fft_n) / f32(waterfall_width)
 			next_bin := int(next_bin_f)
@@ -1677,21 +1753,21 @@ draw_spectrum_plot :: proc() {
 			}
 			if next_actual_bin >= app.fft_n do next_actual_bin = app.fft_n - 1
 			if next_actual_bin < 0 do next_actual_bin = 0
-			
+
 			// Scale peak dB values to plot coordinates
 			peak_db1 := app.peak_spectrum[actual_bin]
 			peak_db2 := app.peak_spectrum[next_actual_bin]
-			
+
 			y1_norm := (max_db - peak_db1) / db_range
 			y2_norm := (max_db - peak_db2) / db_range
-			
+
 			y1 := plot_y + i32(y1_norm * f32(plot_height))
 			y2 := plot_y + i32(y2_norm * f32(plot_height))
-			
+
 			// Clamp to plot area
 			y1 = math.clamp(y1, plot_y, plot_y + plot_height)
 			y2 = math.clamp(y2, plot_y, plot_y + plot_height)
-			
+
 			DrawLine(i32(x), y1, i32(x + 1), y2, peak_color)
 		}
 	}
@@ -1700,10 +1776,10 @@ draw_spectrum_plot :: proc() {
 
 	// Draw grid lines
 	grid_lines := 5
-	for i in 0..=grid_lines {
+	for i in 0 ..= grid_lines {
 		y := plot_y + i32(f32(i) * f32(plot_height) / f32(grid_lines))
 		DrawLine(0, y, waterfall_width, y, grid_color)
-		
+
 		// Grid labels - skip first and last
 		if i > 0 && i < grid_lines {
 			db_val := max_db - (f32(i) / f32(grid_lines)) * db_range
@@ -1711,11 +1787,133 @@ draw_spectrum_plot :: proc() {
 			DrawText(cstring(raw_data(label)), 5, y - 8, 20, rl.Color{200, 200, 200, 255})
 		}
 	}
-	
-	
+
+
 	// Draw plot border
 	DrawRectangleLines(0, plot_y, waterfall_width, plot_height, rl.Color{100, 100, 120, 255})
-	
+
 	// Label
 	DrawText("Spectrum", waterfall_width - 100, plot_y + 5, 20, rl.Color{200, 200, 200, 255})
+}
+
+draw_digit_input :: proc(pending_retune: ^bool, digit: ^u8, y: i32, x: i32) {
+	using rl
+
+	// Draw a rectangle for the digit input
+	digit_width: i32 = 30
+	digit_height: i32 = 42
+	margin: i32 = 10
+	backing_color := rl.Color{255, 255, 255, 20}
+	backing_color_hover := rl.Color{255, 255, 255, 60}
+	text_color := COLOR_HIGHLIGHT
+
+	changed := false
+
+	rect := Rectangle{f32(x), f32(y), f32(digit_width), f32(digit_height)}
+	if CheckCollisionPointRec(GetMousePosition(), rect) {
+		backing_color = backing_color_hover
+		// Handle Mouse Scroll to change digit
+		move := GetMouseWheelMove()
+		if move != 0.0 {
+			// Adjust digit with scroll
+			if move > 0.0 {
+				// Scroll up: increment digit
+				if digit^ < 9 {
+					digit^ += 1
+				} else {
+					digit^ = 0 // wrap around
+				}
+			} else if move < 0.0 {
+				// Scroll down: decrement digit
+				if digit^ > 0 {
+					digit^ -= 1
+				} else {
+					digit^ = 9 // wrap around
+				}
+			}
+
+			pending_retune^ = true // Mark as changed
+		}
+
+		// Handle Keyboard input (check if keys 0-9 are pressed)
+		GetKeyPressed := GetKeyPressed()
+		if GetKeyPressed >= KeyboardKey.ZERO && GetKeyPressed <= KeyboardKey.NINE {
+			// Convert key to digit
+			key_digit := u8(GetKeyPressed - KeyboardKey.ZERO)
+			if key_digit != digit^ {
+				digit^ = key_digit // Set the digit to the pressed key
+				pending_retune^ = true // Mark as changed	
+
+			}
+		}
+
+	}
+
+	DrawRectangle(x, y, digit_width, digit_height, backing_color)
+	DrawText(fmt.ctprintf("%d", digit^), x + 5, y + 3, 40, text_color)
+
+}
+draw_freq_control :: proc(fcs: ^FrequencyControlState) {
+	using rl
+
+	// Position for the frequency input controls
+	ui_x := i32((GetScreenWidth() - app.sidebar_width) / 2 - 168)
+	ui_y := i32(10) // Below the main frequency input
+
+	// Box dimensions
+	digit_width: i32 = 30
+	digit_height: i32 = 42
+	margin: i32 = 10
+	backing_color := rl.Color{255, 255, 255, 20}
+	backing_color_hover := rl.Color{255, 255, 255, 40}
+	text_color := COLOR_HIGHLIGHT
+
+	pending_retune := &fcs.pending_retune
+
+	// Draw Rect back the digit
+	draw_digit_input(pending_retune, &fcs.thou_left, ui_y, ui_x)
+
+	ui_x += digit_width + margin
+	draw_digit_input(pending_retune, &fcs.hund_left, ui_y, ui_x)
+
+	ui_x += digit_width + margin
+	draw_digit_input(pending_retune, &fcs.tens_left, ui_y, ui_x)
+
+	ui_x += digit_width + margin
+	draw_digit_input(pending_retune, &fcs.ones_left, ui_y, ui_x)
+
+	// DOT
+	ui_x += digit_width + margin
+	DrawText(".", ui_x + 5, ui_y + 3, 40, COLOR_HIGHLIGHT)
+
+	ui_x += digit_width + margin
+	draw_digit_input(pending_retune, &fcs.ones_right, ui_y, ui_x)
+
+	ui_x += digit_width + margin
+	draw_digit_input(pending_retune,  &fcs.tens_right, ui_y, ui_x)
+
+	ui_x += digit_width + margin
+	draw_digit_input(pending_retune, &fcs.hund_right, ui_y, ui_x)
+
+	ui_x += digit_width + margin
+	DrawText(
+		"MHz",
+		ui_x,
+		ui_y + 4,
+		40,
+		backing_color_hover,
+	)
+
+	if pending_retune^ {
+		if GuiButton(
+			Rectangle{f32(ui_x + digit_width + margin + 50), f32(ui_y + 10), 60, 24},
+			"Tune",
+		) {
+			new_freq := fcs_get_frequency_hz(fcs)
+			retune_device(app.dev, &app.center_freq, new_freq)
+			fcs.pending_retune = false // Reset pending flag after processing
+		}
+		
+	}
+
 }
