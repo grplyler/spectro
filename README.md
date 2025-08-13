@@ -82,6 +82,7 @@ odin build spectro -o:speed -out:build/spectro
 - [Raylib](https://github.com/raysan5/raylib) for making graphics easy and fun.
 - Odin for being a fun (and faster) language to learn and use.
 - The SDR community for inspiring this project and providing the RTL-SDR hardware.
+- GQRX
 - The (poor) LLMs that I probably abused in the process of writing this, getting angry, then having to figure it out myself anyway.
 
 ### License
