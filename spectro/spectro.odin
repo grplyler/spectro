@@ -11,13 +11,12 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
-
 import "base:runtime"
-import rl "vendor:raylib"
 
+import rl "vendor:raylib"
+import rtlsdr "../vendor/rtlsdr-odin/rtlsdr" // Custom RTL-SDR bindings
 import fft "../../offt"
-import "../../rtlsdr-odin/rtlsdr"
-// import kissfft "../vendor/kissfft"
+
 import "utils"
 
 // Configuration constants
