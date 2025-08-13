@@ -3,6 +3,7 @@
 A Pretty Waterfall Spectral Analyzer, for RTL-SDR (and more to come), Inspired by GQRX, with Cyberpunk Vibes, written in Odin and Raylib.
 
 ![alt text](images/image.png)
+![alt text](images/spectro.gif)
 
 ### Why?
 1. I wanted to learn Odin and build something useful with it.
@@ -35,6 +36,7 @@ odin build spectro -o:speed -out:build/spectro
 ### Key Features Implemented:
 - [x] **RTL-SDR Integration**: Continuous sample acquisition from RTL-SDR device
 - [x] **GPU Accelerated**: Efficient scrolling effect using fragment shader and ring buffers
+- [x] **Click to Tune**: Click on the waterfall to retune the SDR to the clicked frequency 
 - [x] **FFT Processing**: In-house real-time FFT computation (probably chatgpt fueled garbage I don't really understand, but hey, its still 6x faster than KissFFT)
 - [x] ***Sick* Frequency Control**: Frequency control with digits (also inspired by GQRX)
 - [x] **Pretty Waterfall**: Scrolling spectrogram display using Raylib
