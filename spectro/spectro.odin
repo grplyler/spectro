@@ -23,7 +23,7 @@ import "utils"
 // Configuration constants
 INIT_FFT_SIZE :: 2048
 // MAX_FFT_SIZE :: 8192
-HISTORY_ROWS :: 1024
+HISTORY_ROWS :: 512
 BLOCK_SIZE :: 16384 // Number of samples per read
 SAMPLE_RATE :: 2048000 // 2.048 MHz
 CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
@@ -33,6 +33,7 @@ GAIN_TENTHSDB :: -1 // -1 for auto-gain
 DEFAULT_OVERLAP_ENABLED :: true // Enable 50% FFT overlap by default
 COLOR_HIGHLIGHT :: rl.Color{245, 191, 100, 255}
 COLOR_SPECTRUM :: rl.Color{0, 255, 255, 255} // Bright cyan for cyber theme
+COLORMAP := VIRIDIS_COLORS
 
 // Available FFT sizes
 FFT_SIZES := [8]int{64, 128, 256, 512, 1024, 2048, 4096, 8192}
@@ -393,7 +394,7 @@ init_app_resources :: proc(app: ^App, fft_n: int) {
 	lut_pixels := make([]rl.Color, 256)
 	defer delete(lut_pixels)
 	for i in 0 ..< 256 {
-		rgb := VIRIDIS_COLORS[i]
+		rgb := COLORMAP[i]
 		lut_pixels[i] = rl.Color{rgb[0], rgb[1], rgb[2], 255}
 	}
 	lut_image := rl.Image {
@@ -1470,6 +1471,9 @@ draw_freq_bar :: proc() {
 						text_height,
 						rl.Color{200, 200, 200, 255},
 					)
+
+					// Draw Mhz Label to the bottom right of the number
+					DrawText("MHz", label_x + text_width + 10, bar_y + bar_height - 20, 20, rl.Color{180, 180, 180, 255})
 				} else {
 					// Display with one decimal place
 					freq_str := fmt.tprintf("%.3f", freq_rounded)
@@ -1487,6 +1491,9 @@ draw_freq_bar :: proc() {
 						text_height,
 						rl.Color{200, 200, 200, 255},
 					)
+
+					// Draw Mhz Label to the bottom right of the number
+					DrawText("MHz", label_x + text_width + 10, bar_y + bar_height - 20, 20, rl.Color{180, 180, 180, 255})
 				}
 				tick_count += 1
 			}
@@ -1541,8 +1548,6 @@ draw_freq_bar :: proc() {
 	center_x := waterfall_width / 2
 	DrawLine(center_x, bar_y - 5, center_x, bar_y + bar_height, rl.Color{255, 255, 0, 255})
 	
-	// Draw MHz unit label - use string literal to avoid allocation
-	DrawText("MHz", waterfall_width - 40, bar_y + 2 + bar_height / 2, 10, rl.Color{180, 180, 180, 255})
 }
 
 draw_spectrum_plot :: proc() {
