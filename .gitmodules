@@ -1,3 +1,6 @@
-[submodule "vendor/kissfft/kissfft"]
-	path = vendor/kissfft/kissfft
-	url = https://github.com/mborgerding/kissfft.git
+[submodule "vendor/rtlsdr-odin"]
+	path = vendor/rtlsdr-odin
+	url = https://github.com/grplyler/rtlsdr-odin.git
+[submodule "vendor/offt"]
+	path = vendor/offt
+	url = https://github.com/grplyler/offt.git
