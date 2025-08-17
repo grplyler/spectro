@@ -23,21 +23,19 @@ import "utils"
 
 // Configuration constants
 INIT_FFT_SIZE :: 2048
-// MAX_FFT_SIZE :: 8192
 HISTORY_ROWS :: 1024
 BLOCK_SIZE :: 16384 // Number of samples per read
 SAMPLE_RATE :: 2048000 // 2.048 MHz
 CENTER_FREQ_HZ_DEFAULT :: 101100000 // 101.1 MHz
-// CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
-// CENTER_FREQ_HZ_DEFAULT :: 136975000 // 101.1 MHz
 GAIN_TENTHSDB :: -1 // -1 for auto-gain
 DEFAULT_OVERLAP_ENABLED :: true // Enable 50% FFT overlap by default
 COLOR_HIGHLIGHT :: rl.Color{245, 191, 100, 255}
 COLOR_SPECTRUM :: rl.Color{0, 255, 255, 255} // Bright cyan for cyber theme
+COLOR_GRID :: rl.Color{100, 100, 120, 100}
 COLORMAP := VIRIDIS_COLORS
 
 // Available FFT sizes
-FFT_SIZES := [8]int{64, 128, 256, 512, 1024, 2048, 4096, 8192}
+FFT_SIZES := [10]int{64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
 
 // Simple ring buffer for IQ samples
 RingBuffer :: struct {
@@ -46,120 +44,6 @@ RingBuffer :: struct {
 	mutex:      sync.Mutex,
 }
 
-FrequencyControlState :: struct {
-	thou_left:      u8,
-	hund_left:      u8,
-	tens_left:      u8,
-	ones_left:      u8,
-	ones_right:     u8,
-	tens_right:     u8,
-	hund_right:     u8,
-	pending_retune: bool, // Flag to indicate if retune is pending
-}
-
-// freq_control_to_hz :: proc(fcs: ^FrequencyControlState) -> u32 {
-// 	// Convert frequency control state to Hz
-// 	left_part := strings.concatenate({fcs.thou_left, fcs.hund_left, fcs.tens_left, fcs.ones_left})
-// 	right_part := strings.concatenate({fcs.tens_right, fcs.hund_right, fcs.thou_right})
-
-// 	left_freq, left_ok := strconv.parse_int(left_part, 10)
-// 	right_freq, right_ok := strconv.parse_int(right_part, 10)
-
-// 	if !left_ok || !right_ok || left_freq < 0 || right_freq < 0 {
-// 		return 0 // Invalid frequency
-// 	}
-
-// 	return u32(left_freq * 1000 + right_freq)
-// }
-
-Settings :: struct {
-	// FFT Settings
-	fft_size_options:           cstring,
-	fft_size_index:             i32,
-	fft_size:                   i32,
-
-	// Spectrum Settings
-	spectrum_height:            f32,
-	spectrum_min_db:            f32,
-	spectrum_max_db:            f32,
-	spectrum_show_grid:         bool,
-	spectrum_show_peaks:        bool,
-	spectrum_peak_hold_time:    f32,
-	spectrum_smooth:            bool,
-	spectrum_smooth_frames:     f32,
-	spectrum_frame_skip:        f32,
-
-	// Radio Settings
-	radio_sample_rate:          [32]u8,
-	radio_sample_rate_editing:  bool,
-	radio_agc:                  bool,
-	radio_gain:                 f32,
-	radio_tune_delay_ms:        f32,
-	radio_sample_rate_options:  cstring,
-	radio_sample_rate_index: i32,
-	radio_device_options:       cstring,
-	radio_device_index:         i32,
-
-	// Waterfall Settings
-	waterfall_min_db:           f32,
-	waterfall_max_db:           f32,
-	waterfall_gamma:            f32,
-	waterfall_50pct_overlap:    bool,
-	waterfall_autolevel: bool,
-
-	// UI Settings
-	ui_settings_width:          f32,
-	ui_settings_tab: SettingsTab,
-	ui_text_size_small: i32,
-	ui_text_size_med: i32,
-	ui_text_size_large: i32
-}
-
-SettingsTab :: enum {
-	RADIO,
-	SPECTRUM, 
-	WATERFALL,
-	UI
-}
-
-
-default_settings :: proc() -> Settings {
-	s := Settings{}
-	// Initialize default values
-	s.fft_size_options = "256;512;1024;2048;4096;8192;16384"
-	s.fft_size_index = 3
-	s.fft_size = 2048
-
-	s.spectrum_height = 250
-	s.spectrum_min_db = -120
-	s.spectrum_max_db = 60
-	s.spectrum_show_grid = true
-	s.spectrum_show_peaks = true
-	s.spectrum_peak_hold_time = 5.0
-	s.spectrum_smooth = true
-	s.spectrum_smooth_frames = 5
-	s.spectrum_frame_skip = 0
-
-	s.radio_agc = true
-	s.radio_gain = 0.0
-	s.radio_tune_delay_ms = 5.0
-	s.radio_sample_rate_index = 1
-	s.radio_sample_rate_options = "300000;1024000;2048000"
-	s.radio_device_options = "0;1"
-
-	s.waterfall_min_db = -120
-	s.waterfall_max_db = 60
-	s.waterfall_gamma = 1.0
-	s.waterfall_50pct_overlap = true
-	s.waterfall_autolevel = true
-
-	s.ui_settings_width = 300
-	s.ui_settings_tab = .SPECTRUM
-	s.ui_text_size_small = 10
-	s.ui_text_size_med = 20
-	s.ui_text_size_large = 40
-	return s
-}
 
 // Application state
 App :: struct {
@@ -266,53 +150,6 @@ App :: struct {
 
 app: App
 
-fcs_init :: proc() -> FrequencyControlState {
-	return FrequencyControlState {
-		thou_left = 0,
-		hund_left = 1,
-		tens_left = 0,
-		ones_left = 1,
-		ones_right = 1,
-		tens_right = 0,
-		hund_right = 0,
-	}
-}
-
-fcs_get_frequency_hz :: proc(fcs: ^FrequencyControlState) -> u32 {
-	// Convert MHz to Hz
-	// Left side: thousands, hundreds, tens, ones of MHz
-	whole_mhz :=
-		u32(fcs.thou_left) * 1000 +
-		u32(fcs.hund_left) * 100 +
-		u32(fcs.tens_left) * 10 +
-		u32(fcs.ones_left)
-	// Right side: tenths, hundredths, thousandths of MHz  
-	frac_mhz := u32(fcs.ones_right) * 100 + u32(fcs.tens_right) * 10 + u32(fcs.hund_right)
-
-	// Convert to Hz: whole MHz * 1M + fractional MHz * 1000
-	final_hz := whole_mhz * 1_000_000 + frac_mhz * 1000
-	return final_hz
-}
-
-fcs_from_hz :: proc(fcs: ^FrequencyControlState, hz: u32) {
-	// Convert Hz to MHz with proper rounding
-	mhz_scaled := f64(hz) / 1000.0 // Convert to kHz first
-	mhz_rounded := math.round(mhz_scaled) // Round to nearest kHz
-
-	// Split into whole MHz and fractional kHz parts
-	whole_mhz := u32(mhz_rounded / 1000.0)
-	frac_khz := u32(mhz_rounded) % 1000
-
-	// Set frequency control state
-	fcs.thou_left = u8(whole_mhz / 1000)
-	fcs.hund_left = u8((whole_mhz / 100) % 10)
-	fcs.tens_left = u8((whole_mhz / 10) % 10)
-	fcs.ones_left = u8(whole_mhz % 10)
-
-	fcs.ones_right = u8(frac_khz / 100)
-	fcs.tens_right = u8((frac_khz / 10) % 10)
-	fcs.hund_right = u8(frac_khz % 10)
-}
 
 // Initialize ring buffer
 ring_buffer_init :: proc(rb: ^RingBuffer, size: int) {
@@ -828,7 +665,9 @@ void main(){
 		if bytes_read == 0 {
 			// Draw the UI even if we have no data to process
 			BeginDrawing()
-			ClearBackground(GetColor(u32(GuiGetStyle(DEFAULT, i32(GuiDefaultProperty.BACKGROUND_COLOR)))))
+			ClearBackground(
+				GetColor(u32(GuiGetStyle(DEFAULT, i32(GuiDefaultProperty.BACKGROUND_COLOR)))),
+			)
 			DrawFPS(10, 10)
 
 			// Show thread status
@@ -990,7 +829,8 @@ void main(){
 				// Handle plot averaging AFTER waterfall (modifies power_spectrum for plot display only)
 				if app.settings.spectrum_smooth {
 					// Advance write index in circular buffer
-					app.history_write_index = (app.history_write_index + 1) % int(app.settings.spectrum_smooth_frames)
+					app.history_write_index =
+						(app.history_write_index + 1) % int(app.settings.spectrum_smooth_frames)
 
 					// Calculate averaged spectrum for plot display
 					for j in 0 ..< app.fft_n {
@@ -1080,7 +920,8 @@ void main(){
 				if hi - lo < 0.5 do hi = lo + 0.5 // ensure minimum span
 
 				inv := 1.0 / (hi - lo)
-				invg := app.settings.waterfall_gamma != 0.0 ? 1.0 / app.settings.waterfall_gamma : 1.0
+				invg :=
+					app.settings.waterfall_gamma != 0.0 ? 1.0 / app.settings.waterfall_gamma : 1.0
 
 				for x in 0 ..< app.fft_n {
 					// For complex FFT of real-valued input that's been frequency-shifted,
@@ -1176,7 +1017,9 @@ void main(){
 
 		// Render
 		BeginDrawing()
-		ClearBackground(GetColor(u32(GuiGetStyle(DEFAULT, i32(GuiDefaultProperty.BACKGROUND_COLOR)))))
+		ClearBackground(
+			GetColor(u32(GuiGetStyle(DEFAULT, i32(GuiDefaultProperty.BACKGROUND_COLOR)))),
+		)
 
 		// Draw waterfall FIRST, before GUI elements
 		// draw_waterfall(&app)
@@ -1450,15 +1293,19 @@ draw_dc_line :: proc() {
 draw_gui :: proc(app: ^App) {
 	using lay
 	using rl
-	
+
 	// TODO
 	// Draw waterfall FIRST, before GUI elements // done
 	// draw_waterfall(&app) // done
 	// draw_freq_bar() // done
 	// draw_spectrum_plot() // done
-	// draw_cursor_freq()
+
 	// draw_freq_control(&app.fcs)
 	// draw_dc_line()
+
+
+	
+	// odinfmt: disable
 
 	s := &app.settings
 
@@ -1482,79 +1329,151 @@ draw_gui :: proc(app: ^App) {
 			draw_waterfall(app, RLNext(-1, -1))
 		RLEnd()
 		RLBeginColumn(RLNext(-1, -1))
-			RLBeginRow(RLNext(30, -1), plan = {-1, -1, -1})
+
+			// Settings Tab Chooser
+			RLBeginRow(RLNext(30, -1), plan = {-1, -1, -1, -1})
 				if GuiButton(RLNext(-1, -1), "Radio") do s.ui_settings_tab = .RADIO
 				if GuiButton(RLNext(-1, -1), "Spectrum") do s.ui_settings_tab = .SPECTRUM
 				if GuiButton(RLNext(-1, -1), "Waterfall") do s.ui_settings_tab = .WATERFALL
-				// if GuiButton(RLNext(-1, -1), "UI") do settings_tab = .UI
+				if GuiButton(RLNext(-1, -1), "UI") do s.ui_settings_tab = .UI
 			RLEnd()
 
 			// Spectrum Settings
-				if s.ui_settings_tab == .RADIO {
-				settings_panel, panel_pad := RLNextPanel(-1, -1)
-				GuiPanel(settings_panel, "Radio Settings")
-				RLBeginColumn(settings_panel, pad = panel_pad)
-					GuiComboBoxHelper("Device ID", s.radio_device_options, &s.radio_device_index)
-					GuiComboBoxHelper("Sample Rate", s.radio_sample_rate_options, &s.radio_sample_rate_index)
-					GuiCheckBox(RLNext(20, 20), "Automatic Gain Control", &s.radio_agc)
-					if !s.radio_agc {
-						// Additional controls for peak visualization
-						GuiSliderBarHelper("Gain", &s.radio_gain, 1, 40)
-					}
-					GuiSliderBarHelper("Tune Delay (ms)", &s.radio_tune_delay_ms, 0, 100)
-					
-				RLEnd()
-			} else if s.ui_settings_tab == .SPECTRUM {
-				panel_rect, panel_pad := RLNextPanel(-1, -1)
-					GuiPanel(panel_rect, "Spectrum Settings")
-					RLBeginColumn(panel_rect, pad = panel_pad)
-						GuiComboBoxHelper("FFT Size", s.fft_size_options, &s.fft_size_index)
-						GuiSliderBarHelper("Height", &s.spectrum_height, 10, 800)
-						GuiSliderBarHelper("Min dB", &s.spectrum_min_db, -120, 60)
-						GuiSliderBarHelper("Max dB", &s.spectrum_max_db, -120, 60)
-						GuiSliderBarHelper("Frame Skip", &s.spectrum_frame_skip, 0, 30)
-						GuiCheckBox(RLNext(20, 20), "Show Grid", &s.spectrum_show_grid)
-						GuiCheckBox(RLNext(20, 20), "Show Peaks", &s.spectrum_show_peaks)
-						if s.spectrum_show_peaks {
-							// Additional controls for peak visualization
-							GuiSliderBarHelper("Peak Hold Time (sec)", &s.spectrum_peak_hold_time, 0, 60)
-						}
-						GuiCheckBox(RLNext(20, 20), "Smooth", &s.spectrum_smooth)
-						if s.spectrum_smooth {
-							GuiSliderBarHelper("Smooth Frames", &s.spectrum_smooth_frames, 1, 60)
-						}
-					RLEnd()
+			if s.ui_settings_tab == .RADIO {
+				draw_settings_radio()
 
+			} else if s.ui_settings_tab == .SPECTRUM {
+				draw_settings_spectrum()
 
 			} else if s.ui_settings_tab == .WATERFALL {
-				panel_rect, panel_pad := RLNextPanel(-1, -1)
-				GuiPanel(panel_rect, "Waterfall Settings")
-				RLBeginColumn(panel_rect, pad = panel_pad)
-					GuiCheckBox(RLNext(20, 20), "Autolevel", &s.waterfall_autolevel)
-					if !s.waterfall_autolevel {
-						GuiSliderBarHelper("Min dB", &s.waterfall_min_db, -120, 60)
-						GuiSliderBarHelper("Max dB", &s.waterfall_max_db, -120, 60)
-					}
-					GuiSliderBarHelper("Gamma", &s.waterfall_gamma, 0.1, 3.0)
-					GuiCheckBox(RLNext(20, 20), "50% Overlap", &s.waterfall_50pct_overlap)
-				RLEnd()
+				draw_settings_waterfall()
+
 			} else if s.ui_settings_tab == .UI {
-				panel_rect, panel_pad := RLNextPanel(-1, -1)
-				GuiPanel(panel_rect, "UI Settings")
-				RLBeginColumn(panel_rect, pad = panel_pad)
-					GuiSliderBarHelper("Settings Panel Width", &s.ui_settings_width, 50, 500)
-				RLEnd()
+				draw_settings_ui()
 			}
 			
 			// End Spectrum Settings
 		RLEnd()
 	RLEnd() // End main row layout
+
+	if s.show_tuning_cursor {
+		draw_cursor_freq()
+	}
+
+	// odinfmt: enable
+}
+
+draw_settings_ui :: proc() {
+	using lay
+	using rl
+	s := &app.settings
+	
+	// odinfmt: disable
+	panel_rect, panel_pad := RLNextPanel(-1, -1)
+	GuiPanel(panel_rect, "UI Settings")
+	RLBeginColumn(panel_rect, pad = panel_pad)
+		GuiSliderBarHelper("Settings Panel Width", &s.ui_settings_width, 50, 500)
+		editmode := false
+		GuiSpinnerHelper(fmt.ctprintf("Text Size: %dpx (med: %d, lrg: %d)", s.ui_text_size_small, s.ui_text_size_med, s.ui_text_size_large), &s.ui_text_size_small, 10, 20) 
+		s.ui_text_size_med = s.ui_text_size_small * 2
+		s.ui_text_size_large = s.ui_text_size_small * 4
+
+		
+	
+	RLEnd()
+	// odinfmt: enable
+}
+
+draw_settings_radio :: proc() {
+	using lay
+	using rl
+	s := &app.settings
+	
+	// odinfmt: disable
+	settings_panel, panel_pad := RLNextPanel(-1, -1)
+	GuiPanel(settings_panel, "Radio Settings")
+	RLBeginColumn(settings_panel, pad = panel_pad)
+		GuiComboBoxHelper("Device ID", s.radio_device_options, &s.radio_device_index)
+		GuiComboBoxHelper("Sample Rate", s.radio_sample_rate_options, &s.radio_sample_rate_index)
+		GuiCheckBox(RLNext(20, 20), "Automatic Gain Control", &s.radio_agc)
+		if !s.radio_agc {
+			// Additional controls for peak visualization
+			GuiSliderBarHelper("Gain", &s.radio_gain, 1, 40)
+		}
+		GuiSliderBarHelper("Tune Delay (ms)", &s.radio_tune_delay_ms, 0, 100)
+		
+	RLEnd()
+	// odinfmt: enable
+}
+
+draw_settings_spectrum :: proc() {
+	using lay
+	using rl
+	s := &app.settings
+
+	panel_rect, panel_pad := RLNextPanel(-1, -1)
+	// odinfmt: disable
+	GuiPanel(panel_rect, "Spectrum Settings")
+	RLBeginColumn(panel_rect, pad = panel_pad)
+		RLBeginRow(RLNext(50, -1), plan = {-1, -1})
+			RLBeginColumn(RLNext(-1, -1))
+				GuiComboBoxHelper("FFT Size", s.fft_size_options, &s.fft_size_index)
+			RLEnd()
+			RLBeginColumn(RLNext(-1, -1))
+				GuiCheckBox(RLNext(20, 20), "Show Cursor", &s.show_tuning_cursor)
+				GuiCheckBox(RLNext(20, 20), "Click to Tune", &s.click_to_tune)
+			RLEnd()
+		RLEnd()
+
+
+		GuiSliderBarHelper("Height", &s.spectrum_height, 10, 800)
+		GuiSliderBarHelper("Min dB", &s.spectrum_min_db, -120, 60)
+		GuiSliderBarHelper("Max dB", &s.spectrum_max_db, -120, 60)
+		GuiSliderBarHelper("Frame Skip", &s.spectrum_frame_skip, 0, 30)
+		GuiCheckBox(RLNext(20, 20), "Show Grid", &s.spectrum_show_grid)
+		GuiCheckBox(RLNext(20, 20), "Show Peaks", &s.spectrum_show_peaks)
+		if s.spectrum_show_peaks {
+			// Additional controls for peak visualization
+			GuiSliderBarHelper("Peak Hold Time (sec)", &s.spectrum_peak_hold_time, 0, 60)
+		}
+		GuiCheckBox(RLNext(20, 20), "Smooth", &s.spectrum_smooth)
+		if s.spectrum_smooth {
+			GuiSliderBarHelper("Smooth Frames", &s.spectrum_smooth_frames, 1, 60)
+		}
+	RLEnd()
+	// odinfmt: enable
+}
+
+draw_settings_waterfall :: proc() {
+	using lay
+	using rl
+	s := &app.settings
+
+	panel_rect, panel_pad := RLNextPanel(-1, -1)
+	// odinfmt: disable
+	GuiPanel(panel_rect, "Waterfall Settings")
+	RLBeginColumn(panel_rect, pad = panel_pad)
+		GuiCheckBox(RLNext(20, 20), "Autolevel", &s.waterfall_autolevel)
+		if !s.waterfall_autolevel {
+			GuiSliderBarHelper("Min dB", &s.waterfall_min_db, -120, 60)
+			GuiSliderBarHelper("Max dB", &s.waterfall_max_db, -120, 60)
+		}
+		GuiSliderBarHelper("Gamma", &s.waterfall_gamma, 0.1, 3.0)
+		GuiCheckBox(RLNext(20, 20), "50% Overlap", &s.waterfall_50pct_overlap)
+	RLEnd()
+	// odinfmt: enable
 }
 
 draw_cursor_freq :: proc() {
 	using rl
 	mouse_x := GetMouseX()
-	waterfall_width := GetScreenWidth() - app.sidebar_width
+	waterfall_width := GetScreenWidth() - app.sidebar_width - 20
+
+	// Calculate plot area bounds
+	// plot_start_x := 10
+	// plot_end_x := i32(rect.x + rect.width)
+	// plot_width := plot_end_x - plot_start_x
+
 	if mouse_x < waterfall_width {
 		// Draw vertical line at mouse X position
 		DrawRectangle(i32(mouse_x) - 10, 60, 20, GetScreenHeight(), rl.Color{245, 191, 100, 100})
@@ -1562,26 +1481,20 @@ draw_cursor_freq :: proc() {
 		// Calculate frequency at this X position
 		// The waterfall spans from -sample_rate/2 to +sample_rate/2 around center_freq
 		// with DC in the center
-		normalized_x := f64(mouse_x) / f64(waterfall_width) // 0.0 to 1.0 across waterfall
+		normalized_x := f64(mouse_x + 10) / f64(waterfall_width) // 0.0 to 1.0 across waterfall
 		freq_offset := (normalized_x - 0.5) * f64(SAMPLE_RATE) // -sample_rate/2 to +sample_rate/2
 		freq_hz := f64(app.center_freq) + freq_offset
 		freq_mhz := freq_hz / 1e6
 		freq_str := fmt.tprintf("%.3f MHz", freq_mhz)
 
 		// Draw frequency label, keeping it within the waterfall area
-		label_x := mouse_x + 10
+		label_x := mouse_x + 20
 		if label_x + 100 > waterfall_width {
 			label_x = mouse_x - 100
 		}
 		if label_x < 0 do label_x = 10
 
-		DrawText(
-			cstring(raw_data(freq_str)),
-			i32(label_x),
-			GetScreenHeight() - 60,
-			20,
-			rl.Color{245, 191, 100, 255},
-		)
+		DrawText(cstring(raw_data(freq_str)), i32(label_x), 70, 20, COLOR_HIGHLIGHT)
 
 		if IsMouseButtonPressed(rl.MouseButton.LEFT) && GetMouseY() > 60 {
 			// Set new center frequency based on mouse click
@@ -1606,6 +1519,7 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 
 	// Calculate frequency range and scale
 	waterfall_width := i32(rect.width)
+	plot_x: i32 = -5 // Account for UI gap
 	// DrawRectangleRec(rect, Fade(ORANGE, 0.1))
 
 	// Check if we need to redraw (frequency or window size changed)
@@ -1619,8 +1533,8 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 	// Frequency bar parameters
 	bar_height: i32 = 50
 	bar_y: i32 = 35
-	text_height: i32 = 20
-	minor_text_height: i32 = 10
+	text_height: i32 = app.settings.ui_text_size_med
+	minor_text_height: i32 = app.settings.ui_text_size_small
 	tick_height: i32 = 8
 
 	// Draw background bar
@@ -1642,9 +1556,9 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 		if freq >= start_freq_mhz - nice_step / 2.0 {
 			// Calculate x position (optimized)
 			normalized_pos := (freq - start_freq_mhz) * inv_freq_span
-			x := i32(normalized_pos * f64(waterfall_width))
+			x := plot_x + i32(normalized_pos * f64(waterfall_width))
 
-			if x >= 0 && x <= waterfall_width {
+			if x >= plot_x && x <= waterfall_width + plot_x {
 				// Draw major tick
 				DrawLine(x, bar_y, x, bar_y + tick_height, rl.Color{200, 200, 200, 255})
 
@@ -1660,8 +1574,8 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 
 					text_width := MeasureText(cstring(raw_data(freq_str)), text_height)
 					label_x := x - text_width / 2
-					if label_x < 0 do label_x = 0
-					if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
+					if label_x < plot_x do label_x = plot_x
+					if label_x + text_width > waterfall_width + plot_x do label_x = waterfall_width + plot_x - text_width
 
 					DrawText(
 						cstring(raw_data(freq_str)),
@@ -1686,8 +1600,8 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 
 					text_width := MeasureText(cstring(raw_data(freq_str)), text_height)
 					label_x := x - text_width / 2
-					if label_x < 0 do label_x = 0
-					if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
+					if label_x < plot_x do label_x = plot_x
+					if label_x + text_width > waterfall_width + plot_x do label_x = waterfall_width + plot_x - text_width
 
 					DrawText(
 						cstring(raw_data(freq_str)),
@@ -1720,9 +1634,9 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 	for freq <= end_freq_mhz + minor_step && minor_count < max_minor {
 		if freq >= start_freq_mhz - minor_step / 2.0 {
 			normalized_pos := (freq - start_freq_mhz) * inv_freq_span
-			x := i32(normalized_pos * f64(waterfall_width))
+			x := plot_x + i32(normalized_pos * f64(waterfall_width))
 
-			if x >= 0 && x <= waterfall_width {
+			if x >= plot_x && x <= waterfall_width + plot_x {
 				// Fixed check: only draw if not close to a major tick
 				remainder := math.mod(freq, nice_step)
 				is_major := remainder < 0.01 || remainder > (nice_step - 0.01)
@@ -1736,8 +1650,8 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 
 						text_width := MeasureText(cstring(raw_data(freq_str)), minor_text_height)
 						label_x := x - text_width / 2
-						if label_x < 0 do label_x = 0
-						if label_x + text_width > waterfall_width do label_x = waterfall_width - text_width
+						if label_x < plot_x do label_x = plot_x
+						if label_x + text_width > waterfall_width + plot_x do label_x = waterfall_width + plot_x - text_width
 
 						DrawText(
 							cstring(raw_data(freq_str)),
@@ -1755,16 +1669,12 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 		freq += minor_step
 	}
 
-	// Draw center frequency marker
-	// center_x := waterfall_width / 2
-	// DrawLine(center_x, bar_y - 5, center_x, bar_y + bar_height, rl.Color{255, 255, 0, 255})
-
 }
 
 draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 	using rl
 	using lay
-	
+
 
 	if !app.spectrum_initialized || len(app.power_spectrum) == 0 {
 		return
@@ -1772,15 +1682,11 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 
 	GuiPanel(bounds, "Spectrum")
 
-	waterfall_width := i32(bounds.width) + 10
+	waterfall_width := i32(bounds.width)
 	plot_height: i32 = i32(bounds.height)
 	plot_y: i32 = i32(bounds.y)
-	plot_x: i32 = 10
-	// Draw background
-	// DrawRectangle(0, plot_y, waterfall_width, plot_height, rl.Color{20, 20, 30, 180})
-
-	// Draw y label background
-	// Draw background bar
+	plot_x: i32 = 0 //i32(bounds.x)
+	shift_right: i32 = 10.0
 
 	// Calculate dB range for scaling
 	min_db: f32 = app.settings.spectrum_min_db
@@ -1792,8 +1698,7 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 	// Cyber theme highlight color (bright cyan)
 	spectrum_color := COLOR_SPECTRUM // Cyan
 	peak_color := COLOR_HIGHLIGHT // Yellow for peaks
-	grid_color := rl.Color{100, 100, 120, 100}
-
+	grid_color := COLOR_GRID
 
 	// Draw spectrum line with fftshift
 	if len(app.db_array) >= 2 {
@@ -1842,7 +1747,7 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 			y1 = math.clamp(y1, plot_y, plot_y + plot_height)
 			y2 = math.clamp(y2, plot_y, plot_y + plot_height)
 
-			DrawLine(i32(x), y1, i32(x + 1), y2, spectrum_color)
+			DrawLine(i32(x + shift_right), y1, i32(x + 1 + shift_right), y2, spectrum_color)
 		}
 	}
 
@@ -1850,7 +1755,7 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 	if app.settings.spectrum_show_peaks && len(app.peak_spectrum) >= 2 {
 		half_n := app.fft_n / 2
 
-		for x in plot_x ..< waterfall_width - 1 {
+		for x in 0 ..< waterfall_width - 1 {
 			// Map x position to frequency bin (with fftshift)
 			bin_f := f32(x) * f32(app.fft_n) / f32(waterfall_width)
 			bin := int(bin_f)
@@ -1877,6 +1782,7 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 				next_actual_bin = next_bin - half_n
 			}
 			if next_actual_bin >= app.fft_n do next_actual_bin = app.fft_n - 1
+		
 			if next_actual_bin < 0 do next_actual_bin = 0
 
 			// Scale peak dB values to plot coordinates
@@ -1893,13 +1799,11 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 			y1 = math.clamp(y1, plot_y, plot_y + plot_height)
 			y2 = math.clamp(y2, plot_y, plot_y + plot_height)
 
-			DrawLine(i32(x), y1, i32(x + 1), y2, peak_color)
+			
+
+			DrawLine(i32(x + shift_right), y1, i32(x + 1 + shift_right), y2, peak_color)
 		}
 	}
-
-	// DrawRectangle(0, plot_y, 80, plot_height, rl.Color{40, 40, 40, 200})
-	// panel, panel_pad := RLNextPanel(-1, 1)
-	
 
 	// Draw grid lines
 	if app.settings.spectrum_show_grid {
@@ -1912,20 +1816,17 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 			if i > 0 && i < grid_lines {
 				db_val := max_db - (f32(i) / f32(grid_lines)) * db_range
 				label := fmt.tprintf("%.0fdB", db_val)
-				DrawText(cstring(raw_data(label)), plot_x + 10, y - 4, app.settings.ui_text_size_small, rl.Color{200, 200, 200, 255})
+				DrawText(
+					cstring(raw_data(label)),
+					plot_x + 10,
+					y - 4,
+					app.settings.ui_text_size_small,
+					rl.Color{200, 200, 200, 255},
+				)
 			}
 		}
 	}
 
-
-
-	// Draw plot border
-	// DrawRectangleLines(0, plot_y, waterfall_width, plot_height, rl.Color{100, 100, 120, 255})
-
-	// Label
-	// DrawText("Spectrum", waterfall_width - 100, plot_y + 5, 20, rl.Color{200, 200, 200, 255})
-
-	// DebugButton(-1, -1)
 }
 
 draw_digit_input :: proc(pending_retune: ^bool, digit: ^u8, y: i32, x: i32) {
