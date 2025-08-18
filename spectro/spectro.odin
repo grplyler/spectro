@@ -32,7 +32,8 @@ DEFAULT_OVERLAP_ENABLED :: true // Enable 50% FFT overlap by default
 COLOR_HIGHLIGHT :: rl.Color{245, 191, 100, 255}
 COLOR_SPECTRUM :: rl.Color{0, 255, 255, 255} // Bright cyan for cyber theme
 COLOR_GRID :: rl.Color{100, 100, 120, 100}
-COLORMAP := VIRIDIS_COLORS
+// COLORMAP := VIRIDIS_COLORS
+COLORMAP := CYBER_COLORS
 
 // Available FFT sizes
 FFT_SIZES := [10]int{64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
@@ -1316,7 +1317,11 @@ draw_gui :: proc(app: ^App) {
 	// Main layout: Fixed left sidebar, flexible center, fixed right sidebar
 	panel := rl.Rectangle{0, 0, f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())}
 	RLBeginRow(panel, plan = {-1, s.ui_settings_width}, pad = PadAll(10))
-		RLBeginColumn(RLNext(-1, -1), plan = {app.settings.spectrum_height, -1})
+		RLBeginColumn(RLNext(-1, -1), plan = {70, app.settings.spectrum_height, -1})
+
+			// Draw Freq Control
+			draw_freq_control(RLNext(-1, -1), app, &app.fcs)
+
 			// Draw Spectrum 
 			spectrum_rect := RLNext(-1, -1)
 			draw_spectrum_plot(spectrum_rect)
@@ -1327,6 +1332,8 @@ draw_gui :: proc(app: ^App) {
 
 			// Draw Waterfall
 			draw_waterfall(app, RLNext(-1, -1))
+
+			
 		RLEnd()
 		RLBeginColumn(RLNext(-1, -1))
 
@@ -1372,12 +1379,18 @@ draw_settings_ui :: proc() {
 	panel_rect, panel_pad := RLNextPanel(-1, -1)
 	GuiPanel(panel_rect, "UI Settings")
 	RLBeginColumn(panel_rect, pad = panel_pad)
-		GuiSliderBarHelper("Settings Panel Width", &s.ui_settings_width, 50, 500)
+		GuiLabel(RLNext(10, -1), "Settings Panel Width")
+		RLBeginRow(RLNext(20, -1))
+			if GuiButton(RLNext(50, -1), "Reset") do s.ui_settings_width = 300
+			GuiSliderBar(RLNext(-1, -1, pr=30), nil, fmt.ctprintf("%d", i32(s.ui_settings_width)), &s.ui_settings_width, 100, 400)
+		RLEnd()
 		editmode := false
 		GuiSpinnerHelper(fmt.ctprintf("Text Size: %dpx (med: %d, lrg: %d)", s.ui_text_size_small, s.ui_text_size_med, s.ui_text_size_large), &s.ui_text_size_small, 10, 20) 
 		s.ui_text_size_med = s.ui_text_size_small * 2
 		s.ui_text_size_large = s.ui_text_size_small * 4
 
+		GuiCheckBox(RLNext(20, 20), "Show Spectrum Panel Outline", &s.spectrum_show_panel)
+		GuiCheckBox(RLNext(20, 20), "Show Waterfall Panel Outline", &s.waterfall_show_panel)
 		
 	
 	RLEnd()
@@ -1494,7 +1507,7 @@ draw_cursor_freq :: proc() {
 		}
 		if label_x < 0 do label_x = 10
 
-		DrawText(cstring(raw_data(freq_str)), i32(label_x), 70, 20, COLOR_HIGHLIGHT)
+		DrawText(cstring(raw_data(freq_str)), i32(label_x), i32(app.settings.spectrum_height) + 60, 20, COLOR_HIGHLIGHT)
 
 		if IsMouseButtonPressed(rl.MouseButton.LEFT) && GetMouseY() > 60 {
 			// Set new center frequency based on mouse click
@@ -1532,7 +1545,7 @@ draw_freq_bar :: proc(rect: rl.Rectangle) {
 
 	// Frequency bar parameters
 	bar_height: i32 = 50
-	bar_y: i32 = 35
+	bar_y: i32 = 60
 	text_height: i32 = app.settings.ui_text_size_med
 	minor_text_height: i32 = app.settings.ui_text_size_small
 	tick_height: i32 = 8
@@ -1680,7 +1693,9 @@ draw_spectrum_plot :: proc(bounds: rl.Rectangle) {
 		return
 	}
 
-	GuiPanel(bounds, "Spectrum")
+	if app.settings.spectrum_show_panel {
+		GuiPanel(bounds, "Spectrum")
+	}
 
 	waterfall_width := i32(bounds.width)
 	plot_height: i32 = i32(bounds.height)
@@ -1884,63 +1899,5 @@ draw_digit_input :: proc(pending_retune: ^bool, digit: ^u8, y: i32, x: i32) {
 
 	DrawRectangle(x, y, digit_width, digit_height, backing_color)
 	DrawText(fmt.ctprintf("%d", digit^), x + 5, y + 3, 40, text_color)
-
-}
-draw_freq_control :: proc(fcs: ^FrequencyControlState) {
-	using rl
-
-	// Position for the frequency input controls
-	ui_x := i32((GetScreenWidth() - app.sidebar_width) / 2 - 168)
-	ui_y := i32(10) // Below the main frequency input
-
-	// Box dimensions
-	digit_width: i32 = 30
-	digit_height: i32 = 42
-	margin: i32 = 10
-	backing_color := rl.Color{255, 255, 255, 20}
-	backing_color_hover := rl.Color{255, 255, 255, 40}
-	text_color := COLOR_HIGHLIGHT
-
-	pending_retune := &fcs.pending_retune
-
-	// Draw Rect back the digit
-	draw_digit_input(pending_retune, &fcs.thou_left, ui_y, ui_x)
-
-	ui_x += digit_width + margin
-	draw_digit_input(pending_retune, &fcs.hund_left, ui_y, ui_x)
-
-	ui_x += digit_width + margin
-	draw_digit_input(pending_retune, &fcs.tens_left, ui_y, ui_x)
-
-	ui_x += digit_width + margin
-	draw_digit_input(pending_retune, &fcs.ones_left, ui_y, ui_x)
-
-	// DOT
-	ui_x += digit_width + margin
-	DrawText(".", ui_x + 5, ui_y + 3, 40, COLOR_HIGHLIGHT)
-
-	ui_x += digit_width + margin
-	draw_digit_input(pending_retune, &fcs.ones_right, ui_y, ui_x)
-
-	ui_x += digit_width + margin
-	draw_digit_input(pending_retune, &fcs.tens_right, ui_y, ui_x)
-
-	ui_x += digit_width + margin
-	draw_digit_input(pending_retune, &fcs.hund_right, ui_y, ui_x)
-
-	ui_x += digit_width + margin
-	DrawText("MHz", ui_x, ui_y + 4, 40, backing_color_hover)
-
-	if pending_retune^ {
-		if GuiButton(
-			Rectangle{f32(ui_x + digit_width + margin + 50), f32(ui_y + 10), 60, 24},
-			"Tune",
-		) {
-			new_freq := fcs_get_frequency_hz(fcs)
-			retune_device(app.dev, &app.center_freq, new_freq)
-			fcs.pending_retune = false // Reset pending flag after processing
-		}
-
-	}
 
 }

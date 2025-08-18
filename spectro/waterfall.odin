@@ -4,7 +4,9 @@ import rl "vendor:raylib"
 draw_waterfall :: proc(app: ^App, bounds: rl.Rectangle) {
 	using rl
 
-	GuiPanel(bounds, "Waterfall")
+	if app.settings.waterfall_show_panel {
+		GuiPanel(bounds, "Waterfall")	
+	}
 	
 
 	BeginShaderMode(app.scroll_shader)
