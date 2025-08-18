@@ -2,7 +2,7 @@
 
 A Pretty Waterfall Spectral Analyzer, for RTL-SDR (and more to come), Inspired by GQRX, with Cyberpunk Vibes, written in Odin and Raylib.
 
-![alt text](images/v2ui.png)](image.png)
+![alt text](images/v2ui.png)
 
 ### Why?
 1. I wanted to learn Odin and build something useful with it.
