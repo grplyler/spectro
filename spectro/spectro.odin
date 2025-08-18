@@ -13,11 +13,11 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 
-
-import lay "../../raylay" // Custom RTL-SDR bindings
-import fft "../vendor/offt"
-import rtlsdr "../vendor/rtlsdr-odin/rtlsdr"
 import rl "vendor:raylib"
+
+import rtlsdr "../vendor/rtlsdr-odin/rtlsdr"
+import lay "../vendor/raylay"
+import fft "../vendor/offt"
 
 import "utils"
 
