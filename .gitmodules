@@ -4,3 +4,6 @@
 [submodule "vendor/offt"]
 	path = vendor/offt
 	url = https://github.com/grplyler/offt.git
+[submodule "vendor/raylay"]
+	path = vendor/raylay
+	url = https://github.com/grplyler/raylay.git
